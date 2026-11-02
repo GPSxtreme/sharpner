@@ -40,15 +40,17 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Automatic browsers, across the deployment | 1 |
 | Browser tabs in a turn | 4 |
 | Edit debounce | 1.2 seconds |
-| Fair turn / hard session deadline | 8 / 20 seconds |
+| Fair turn / hard session deadline | 8 / 20 seconds; 15 seconds when no other file is ready |
 | Reserved time before admission | 45 seconds, refunded to measured elapsed time |
-| Daily automatic browser time per file | 90 seconds |
-| Daily automatic browser time per workspace | 180 seconds |
-| Daily automatic browser time globally | 900 seconds |
+| Daily automatic browser time per file | 30 minutes |
+| Daily automatic browser time per workspace | 1 hour |
+| Daily automatic browser time globally | 4 hours |
+| Daily browser time for the temporary `BACKFILL` files | 1 hour, separate from the global budget |
 | Queued files | 1,000 |
 | Attempts per node revision | 3 |
 
-The shared Durable Object rotates workspaces, then files. A busy file keeps one
+The shared Durable Object rotates workspaces, then files. Files in the temporary
+`BACKFILL` set wait behind every file someone is viewing. A busy file keeps one
 browser session across its batches until its fair turn expires; it does not
 launch another browser per 24 nodes or retain an idle browser between turns.
 Persistent leases and conservative reservations protect admission across
@@ -72,12 +74,18 @@ never change active heights. The existing live/thumbnail handoffs remain in use.
 Admission requires room for the entire reservation, so a nearly exhausted budget
 can defer work before the numeric limit is reached. At a budget limit, new previews wait until the next UTC day; cached switches and
 live frames still work. Missing `THUMBNAIL_QUEUE` configuration disables automatic
-work instead of bypassing the budget. Add the binding and `v2` Durable Object
+work instead of bypassing the budget. Each denied admission logs `thumbnail-deferred` with
+the files and the budgets they exhausted; each turn logs `thumbnail-turn` with its rendered
+count, browser time, launch time and turn length. Add the binding and `v2` Durable Object
 migration from `wrangler.example.jsonc` when deploying.
 
-The default global cap is intentionally a small shared allowance: 900 seconds/day
-is at most 7.5 browser-hours in a 30-day month, leaving some included usage for
-explicit screenshots. It cannot supply unlimited active teams. Raise it using
+Until 2026-11-02 the limits were 90 seconds per file, 180 seconds per workspace and
+900 seconds globally, and the backfill shared the global budget. Production logs that
+day showed every automatic turn for a viewed file refused at admission: the canvas
+showed "Rendering…" and live frames only, and nothing appeared once zoomed out.
+The raised global cap allows at most 120 browser-hours in a 30-day month: about
+$10/month above the 10 included hours at $0.09/hour if it is used up every day,
+with the single shared browser keeping concurrency within the included allowance. Raise it using
 observed queue delay and per-team demand; the cost estimates below assume the
 requested work is admitted, rather than treating deferred work as free capacity.
 At the measured throughput, 1,000 teams with the modeled workload need about

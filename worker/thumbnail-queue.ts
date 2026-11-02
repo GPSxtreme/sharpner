@@ -63,15 +63,21 @@ export class ThumbnailQueue extends DurableObject<Env> {
     this.sql.exec(`DELETE FROM budgets WHERE day != ?`, day);
     const jobs = this.sql.exec<Job>(`SELECT q.file_id AS fileId, q.team_id AS teamId, q.ready_at AS readyAt FROM queue q
       LEFT JOIN budgets b ON b.id = 'team:' || q.team_id
-      ORDER BY coalesce(b.turn, 0), q.turn, q.file_id`).toArray();
+      ORDER BY coalesce(b.turn, 0), q.turn, q.file_id`).toArray()
+      // Files someone is viewing go before the backfill; the sort is stable, so fair rotation holds within each group.
+      .sort((a, b) => Number(backfilling(a.fileId, now)) - Number(backfilling(b.fileId, now)));
     let next = (day + 1) * DAY_MS;
+    const deferred: { fileId: string; exhausted: string[] }[] = [];
     for (const job of jobs) {
       if (job.readyAt > now) { next = Math.min(next, job.readyAt); continue; }
-      const limits = [["global", policy.globalDailyMs], [`team:${job.teamId}`, policy.teamDailyMs], [`file:${job.fileId}`, policy.fileDailyMs]] as const;
-      // A backfilling file is charged to the global budget only.
-      const charged = backfilling(job.fileId, now) ? limits.slice(0, 1) : limits;
+      // A backfilling file has its own budget, so it cannot use up the time viewed files need.
+      const charged = backfilling(job.fileId, now)
+        ? [["backfill", policy.backfillDailyMs] as const]
+        : [["global", policy.globalDailyMs], [`team:${job.teamId}`, policy.teamDailyMs], [`file:${job.fileId}`, policy.fileDailyMs]] as const;
       const budget = charged.map(([id, limit]) => ({ id, limit, spent: this.sql.exec<{ spent: number }>(`SELECT spent FROM budgets WHERE id = ?`, id).toArray()[0]?.spent ?? 0 }));
-      if (budget.some((b) => b.spent + policy.reservationMs > b.limit)) continue;
+      const exhausted = budget.filter((b) => b.spent + policy.reservationMs > b.limit).map((b) => b.id);
+      if (exhausted.length) { deferred.push({ fileId: job.fileId, exhausted }); continue; }
+      const alone = !jobs.some((other) => other !== job && other.readyAt <= now);
       // Persist the reservation before yielding. A restart charges the whole reservation and the
       // lease prevents another automatic session until the abandoned session's keep-alive expires.
       this.sql.exec(`INSERT OR REPLACE INTO lease VALUES (1, ?, '')`, now + policy.reservationMs);
@@ -81,7 +87,7 @@ export class ThumbnailQueue extends DurableObject<Env> {
       let spent: number = policy.reservationMs;
       let more = true, completed = false, retryAt = now + 30_000;
       try {
-        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000);
+        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000, alone ? policy.soloQuantumMs : policy.quantumMs);
         spent = Math.min(policy.reservationMs, Math.max(0, result.browserMs));
         more = result.more;
         retryAt = result.retryAt ?? Date.now() + 500;
@@ -93,6 +99,8 @@ export class ThumbnailQueue extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(Date.now() + 50);
       return;
     }
+    // Previews then wait for the next UTC day; say so, because the canvas only shows "Rendering…".
+    if (deferred.length) console.log("thumbnail-deferred", JSON.stringify({ deferred: deferred.slice(0, 20), files: deferred.length }));
     if (jobs.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 50, next));
   }
 }

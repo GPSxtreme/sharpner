@@ -827,9 +827,9 @@ export class FileRoom extends DurableObject<Env> {
   private hasPendingThumbnails() { return !!this.pendingThumbnails(1).length || !!this.pendingImages(1).length; }
 
   /** One bounded fair turn, one browser for the file's entire queue. Called only by ThumbnailQueue. */
-  async renderThumbnails(notAfter = Date.now() + 20_000): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
+  async renderThumbnails(notAfter = Date.now() + 20_000, quantumMs: number = THUMBNAIL_POLICY.quantumMs): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
     if (this.browserTask) return { more: true, browserMs: 0, rendered: 0 };
-    return this.withFileBrowser(() => this.renderThumbnailsNow(notAfter));
+    return this.withFileBrowser(() => this.renderThumbnailsNow(notAfter, Math.min(quantumMs, THUMBNAIL_POLICY.soloQuantumMs)));
   }
 
   private async withFileBrowser<T>(run: () => Promise<T>): Promise<T> {
@@ -889,7 +889,7 @@ export class FileRoom extends DurableObject<Env> {
     } finally { this.screenshotRequests--; }
   }
 
-  private async renderThumbnailsNow(notAfter: number): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
+  private async renderThumbnailsNow(notAfter: number, quantumMs: number): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
     const fileId = this.meta("fileId"), base = this.meta("origin") ?? "";
     if (!this.env.BROWSER || !fileId || !this.hasRenderAudience()) return { more: false, browserMs: 0, rendered: 0 };
     const readyAt = Number(this.meta("thumbAfter") ?? 0);
@@ -905,25 +905,26 @@ export class FileRoom extends DurableObject<Env> {
     }
     const tabCount = Math.min(THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
     const started = Date.now();
-    let rendered = 0;
+    let rendered = 0, launchMs = 0;
     let retryAt: number | undefined;
     let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
     let stopped = false;
     try {
       const run = async () => {
         browser = await puppeteer.launch(this.env.BROWSER!, { keep_alive: 10_000 });
+        launchMs = Date.now() - started;
         if (stopped) { await browser.close(); return; }
         const tabs = await Promise.all(Array.from({ length: Math.max(1, tabCount) }, () => browser!.newPage()));
         // Re-query between batches so edits supersede queued work.
         // Stop while an edit's debounce is pending; without I/O, Date.now() cannot advance past it.
-        while (!stopped && Date.now() - started < THUMBNAIL_POLICY.quantumMs && Date.now() >= Number(this.meta("thumbAfter") ?? 0)
+        while (!stopped && Date.now() - started < quantumMs && Date.now() >= Number(this.meta("thumbAfter") ?? 0)
           && this.hasRenderAudience() && this.meta("designRev") === designRev) {
           const queue = this.pendingThumbnails(THUMB_BATCH, design);
           const jobs = [...queue, ...this.pendingImages(THUMB_BATCH - queue.length)];
           if (!jobs.length) break;
           await Promise.all(tabs.map(async (tab) => {
             for (let n = jobs.shift(); n && !stopped; n = jobs.shift()) {
-              if (!this.hasRenderAudience() || Date.now() < Number(this.meta("thumbAfter") ?? 0) || Date.now() - started >= THUMBNAIL_POLICY.quantumMs) break;
+              if (!this.hasRenderAudience() || Date.now() < Number(this.meta("thumbAfter") ?? 0) || Date.now() - started >= quantumMs) break;
               // A timed-out tab is never reused; close the whole session before retrying.
               if (!await this.renderThumb(tab, n, fileId, base, design, () => !stopped && this.meta("designRev") === designRev)) { stopped = true; break; }
               rendered++;
@@ -941,7 +942,7 @@ export class FileRoom extends DurableObject<Env> {
       if (browser) await withTimeout(browser.close(), 5000, "browser close");
     }
     const browserMs = Date.now() - started;
-    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, browserMs }));
+    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, browserMs, launchMs, quantumMs }));
     this.updateCover(fileId);
     const more = this.hasPendingThumbnails();
     if (!more && this.backfill()) { this.setMeta("backfill", ""); console.log("thumbnail-backfill-done", JSON.stringify({ fileId })); }

@@ -1,12 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("cloudflare:workers", () => ({ DurableObject: class { constructor(readonly ctx: DurableObjectState, readonly env: Env) {} } }));
-const calls = vi.hoisted(() => ({ render: vi.fn() }));
-vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: () => calls.render(fileId) }) }));
+const calls = vi.hoisted(() => ({ render: vi.fn(), quantum: [] as number[] }));
+vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: (_notAfter: number, quantumMs: number) => { calls.quantum.push(quantumMs); return calls.render(fileId); } }) }));
 import { ThumbnailQueue } from "./thumbnail-queue";
 import { BACKFILL, THUMBNAIL_POLICY as policy } from "./thumbnail-policy";
 const databases: DatabaseSync[] = [];
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); });
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); calls.quantum.length = 0; });
 afterEach(() => { vi.useRealTimers(); for (const db of databases.splice(0)) db.close(); });
 function fixture() {
   const db = new DatabaseSync(":memory:"); databases.push(db);
@@ -61,22 +61,56 @@ describe("shared automatic render budget", () => {
     expect(calls.render).toHaveBeenCalledTimes(1);
   });
 
-  it("charges a backfilling file to the global budget only, until the backfill expires", async () => {
+  it("charges a backfilling file to its own budget only, until the backfill expires", async () => {
     const {queue, fire, db} = fixture();
     const file = [...BACKFILL.files][0]!, team = file.split("-")[0];
     vi.setSystemTime(BACKFILL.until - 86_400_000);
     const day = Math.floor(Date.now()/86_400_000);
     db.prepare("INSERT INTO budgets VALUES (?, ?, ?, 0)").run(`file:${file}`,day,policy.fileDailyMs);
     db.prepare("INSERT INTO budgets VALUES (?, ?, ?, 0)").run(`team:${team}`,day,policy.teamDailyMs);
+    db.prepare("INSERT INTO budgets VALUES ('global', ?, ?, 0)").run(day,policy.globalDailyMs);
     await queue.enqueue(file, Date.now()); await fire();
     expect(calls.render).toHaveBeenCalledTimes(1);
-    expect(db.prepare("SELECT spent FROM budgets WHERE id = 'global'").get()).toEqual({spent:1000});
+    expect(db.prepare("SELECT spent FROM budgets WHERE id = 'backfill'").get()).toEqual({spent:1000});
+    expect(db.prepare("SELECT spent FROM budgets WHERE id = 'global'").get()).toEqual({spent:policy.globalDailyMs});
     expect(db.prepare("SELECT spent FROM budgets WHERE id = ?").get(`file:${file}`)).toEqual({spent:policy.fileDailyMs});
+    db.prepare("UPDATE budgets SET spent = ? WHERE id = 'backfill'").run(policy.backfillDailyMs);
+    await queue.enqueue(file, Date.now()); await fire();
+    expect(calls.render).toHaveBeenCalledTimes(1);
     // Expired: the file's own exhausted budget applies again.
     vi.setSystemTime(BACKFILL.until + 1000);
+    db.prepare("UPDATE budgets SET day = ?, spent = 0 WHERE id = 'global'").run(Math.floor(Date.now()/86_400_000));
     db.prepare("UPDATE budgets SET day = ? WHERE id != 'global'").run(Math.floor(Date.now()/86_400_000));
     await queue.enqueue(file, Date.now()); await fire();
     expect(calls.render).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a viewed file before a backfilling file that has waited longer", async () => {
+    const {queue, fire} = fixture();
+    const file = [...BACKFILL.files][0]!;
+    vi.setSystemTime(BACKFILL.until - 86_400_000);
+    await queue.enqueue(file, Date.now());
+    vi.advanceTimersByTime(1000);
+    await queue.enqueue("z-viewed", Date.now());
+    await fire(); await fire();
+    expect(calls.render.mock.calls.flat()).toEqual(["z-viewed", file]);
+  });
+
+  it("gives a file the longer turn only while no other file is ready", async () => {
+    const {queue, fire} = fixture();
+    await queue.enqueue("a-one", Date.now()); await queue.enqueue("b-one", Date.now());
+    await fire(); await fire();
+    expect(calls.quantum).toEqual([policy.quantumMs, policy.soloQuantumMs]);
+  });
+
+  it("logs which budgets deferred a file", async () => {
+    const {queue, fire, db} = fixture();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    db.prepare("INSERT INTO budgets VALUES ('global', ?, ?, 0)").run(Math.floor(Date.now()/86_400_000), policy.globalDailyMs);
+    await queue.enqueue("a-one", Date.now()); await fire();
+    expect(calls.render).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("thumbnail-deferred", JSON.stringify({ deferred: [{ fileId: "a-one", exhausted: ["global"] }], files: 1 }));
+    log.mockRestore();
   });
 
   it("charges failed turns conservatively and does no browser work for an idle/deleted file", async () => {
