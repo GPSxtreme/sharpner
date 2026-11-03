@@ -40,12 +40,12 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Automatic browsers, across the deployment | 1 |
 | Browser tabs in a turn | 4 |
 | Edit debounce | 1.2 seconds |
-| Fair turn / hard session deadline | 8 / 20 seconds; 15 seconds when no other file is ready |
+| Fair turn / hard session deadline | 8 / 20 seconds; 15 seconds when no other file can run |
 | Reserved time before admission | 45 seconds, refunded to measured elapsed time |
 | Daily automatic browser time per file | 30 minutes |
 | Daily automatic browser time per workspace | 1 hour |
 | Daily automatic browser time globally | 4 hours |
-| Daily browser time for the temporary `BACKFILL` files | 1 hour, separate from the global budget |
+| Daily browser time for the temporary `BACKFILL` files | 1 hour, separate from the global budget; then the normal budgets apply |
 | Queued files | 1,000 |
 | Attempts per node revision | 3 |
 

@@ -68,16 +68,25 @@ export class ThumbnailQueue extends DurableObject<Env> {
       .sort((a, b) => Number(backfilling(a.fileId, now)) - Number(backfilling(b.fileId, now)));
     let next = (day + 1) * DAY_MS;
     const deferred: { fileId: string; exhausted: string[] }[] = [];
+    const spentOn = (id: string) => this.sql.exec<{ spent: number }>(`SELECT spent FROM budgets WHERE id = ?`, id).toArray()[0]?.spent ?? 0;
+    const admitted: { job: Job; budget: { id: string; spent: number }[] }[] = [];
     for (const job of jobs) {
       if (job.readyAt > now) { next = Math.min(next, job.readyAt); continue; }
-      // A backfilling file has its own budget, so it cannot use up the time viewed files need.
-      const charged = backfilling(job.fileId, now)
-        ? [["backfill", policy.backfillDailyMs] as const]
-        : [["global", policy.globalDailyMs], [`team:${job.teamId}`, policy.teamDailyMs], [`file:${job.fileId}`, policy.fileDailyMs]] as const;
-      const budget = charged.map(([id, limit]) => ({ id, limit, spent: this.sql.exec<{ spent: number }>(`SELECT spent FROM budgets WHERE id = ?`, id).toArray()[0]?.spent ?? 0 }));
-      const exhausted = budget.filter((b) => b.spent + policy.reservationMs > b.limit).map((b) => b.id);
-      if (exhausted.length) { deferred.push({ fileId: job.fileId, exhausted }); continue; }
-      const alone = !jobs.some((other) => other !== job && other.readyAt <= now);
+      const normal = [["global", policy.globalDailyMs], [`team:${job.teamId}`, policy.teamDailyMs], [`file:${job.fileId}`, policy.fileDailyMs]] as const;
+      // A backfilling file spends its own budget first, so it cannot use up the time viewed files need.
+      // Once that is spent it is charged like any file, so someone working in it still gets previews.
+      const options = backfilling(job.fileId, now) ? [[["backfill", policy.backfillDailyMs] as const], normal] : [normal];
+      let exhausted: string[] = [];
+      for (const charged of options) {
+        const budget = charged.map(([id, limit]) => ({ id, limit, spent: spentOn(id) }));
+        exhausted = budget.filter((b) => b.spent + policy.reservationMs > b.limit).map((b) => b.id);
+        if (!exhausted.length) { admitted.push({ job, budget }); break; }
+      }
+      if (exhausted.length) deferred.push({ fileId: job.fileId, exhausted });
+    }
+    for (const { job, budget } of admitted.slice(0, 1)) {
+      // Only files that could run now compete for the browser.
+      const alone = admitted.length === 1;
       // Persist the reservation before yielding. A restart charges the whole reservation and the
       // lease prevents another automatic session until the abandoned session's keep-alive expires.
       this.sql.exec(`INSERT OR REPLACE INTO lease VALUES (1, ?, '')`, now + policy.reservationMs);

@@ -1,8 +1,8 @@
 /** Automatic previews have a shared budget. Explicit agent screenshots use their own request path. */
 /**
  * One-off backfill: these files re-render every preview without a viewer until `until`. Requested by the
- * owner after the dark-only migration queued every preview in the IQ Industries files. They are charged
- * to their own daily budget, never the shared global one, and wait behind files someone is viewing.
+ * owner after the dark-only migration queued every preview in the IQ Industries files. They spend their
+ * own daily budget first, then the normal budgets, and wait behind files someone is viewing.
  */
 export const BACKFILL = {
   files: new Set(["2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a", "c84c7946-be06-46d7-9b1d-c4486691dabb", "4d0f3398-96fd-4b9c-a8fc-dd7b1b75f437"]),
