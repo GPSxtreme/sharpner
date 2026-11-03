@@ -85,6 +85,27 @@ describe("shared automatic render budget", () => {
     expect(calls.render).toHaveBeenCalledTimes(1);
   });
 
+  it("charges a backfilling file like any file once its own budget is spent", async () => {
+    const {queue, fire, db} = fixture();
+    const file = [...BACKFILL.files][0]!;
+    vi.setSystemTime(BACKFILL.until - 86_400_000);
+    db.prepare("INSERT INTO budgets VALUES ('backfill', ?, ?, 0)").run(Math.floor(Date.now()/86_400_000), policy.backfillDailyMs);
+    await queue.enqueue(file, Date.now()); await fire();
+    expect(calls.render).toHaveBeenCalledWith(file);
+    expect(db.prepare("SELECT spent FROM budgets WHERE id = ?").get(`file:${file}`)).toEqual({spent:1000});
+    expect(db.prepare("SELECT spent FROM budgets WHERE id = 'global'").get()).toEqual({spent:1000});
+    expect(db.prepare("SELECT spent FROM budgets WHERE id = 'backfill'").get()).toEqual({spent:policy.backfillDailyMs});
+  });
+
+  it("gives the longer turn when every other ready file is out of budget", async () => {
+    const {queue, fire, db} = fixture();
+    db.prepare("INSERT INTO budgets VALUES ('file:b-one', ?, ?, 0)").run(Math.floor(Date.now()/86_400_000), policy.fileDailyMs);
+    await queue.enqueue("a-one", Date.now()); await queue.enqueue("b-one", Date.now());
+    await fire();
+    expect(calls.render.mock.calls.flat()).toEqual(["a-one"]);
+    expect(calls.quantum).toEqual([policy.soloQuantumMs]);
+  });
+
   it("renders a viewed file before a backfilling file that has waited longer", async () => {
     const {queue, fire} = fixture();
     const file = [...BACKFILL.files][0]!;
