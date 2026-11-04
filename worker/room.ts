@@ -812,7 +812,11 @@ export class FileRoom extends DurableObject<Env> {
     return requested && requested === this.meta("coverNodeId") ? requested : null;
   }
 
-  private hasRenderAudience() { return this.viewedPages().length > 0 || this.coverRequest() !== null || this.backfill(); }
+  /**
+   * Every file renders its pending previews whether or not anyone has it open, so a preview follows an agent's edit
+   * (and the screens that use an edited component) without waiting for a viewer. Viewed pages still render first.
+   */
+  private hasRenderAudience() { return true; }
 
   /** A one-off backfill renders the whole file without a viewer until it finishes or expires. */
   private backfill() { return this.meta("backfill") === "1" && backfilling(this.meta("fileId")); }
@@ -827,7 +831,7 @@ export class FileRoom extends DurableObject<Env> {
        WHERE t.thumb_lo IS NULL AND t.tries < ${THUMB_MAX_TRIES}
          AND t.theme = '' AND (? OR n.id = ?)
        ORDER BY n.page_id IN (SELECT value FROM json_each(?)) DESC, t.tries, n.sort, n.id LIMIT ?`,
-      Number(this.viewedPages().length > 0 || this.backfill()), this.coverRequest(),
+      1, this.coverRequest(),
       JSON.stringify(this.viewedPages()), limit,
     ).toArray().map((n) => ({ ...n, html: renderedHtml(n, n.source, design) }));
   }
@@ -835,7 +839,7 @@ export class FileRoom extends DurableObject<Env> {
   private pendingImages(limit: number) {
     return this.sql.exec<{ id: string; src: string; width: number; height: number | null; rev: number }>(
       `SELECT id, src, width, height, rev FROM nodes WHERE ${PENDING_IMAGES} AND (? OR id = ?) LIMIT ?`,
-      Number(this.viewedPages().length > 0 || this.backfill()), this.coverRequest(), limit,
+      1, this.coverRequest(), limit,
     ).toArray().map((n) => ({ ...n, kind: "image" as const, html: "" }));
   }
 

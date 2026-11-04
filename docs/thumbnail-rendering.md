@@ -55,7 +55,7 @@ restarts and failures. Explicit `screenshot_nodes` requests use the same browser
 slot and the file's serialized browser work, with bounded waiting and session
 time. Their usage is logged separately and is outside automatic daily quotas.
 
-Each node keeps exactly one preview. Viewed pages render before other pages.
+Each node keeps exactly one preview. Every file renders its pending previews whether or not anyone has it open, so previews follow agent edits; viewed pages render before other pages.
 Per-edit browser time is one render per edited node, regardless of how many
 themes the tokens declare.
 
