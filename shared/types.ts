@@ -204,7 +204,7 @@ export function frameDocument(html: string, opts: { base?: string; measure?: boo
  * render in dark when the design system's tokens define a dark theme.
  */
 export function renderedHtml(n: Pick<CanvasNode, "kind" | "name"> & Partial<Pick<CanvasNode, "height">>, source: string, design?: Pick<DesignSystem, "tokens">) {
-  if (n.kind === "component") return componentSpecimen(n.name, componentTag(n.name), source, n.height, !!design && themeNames(design.tokens).includes("dark"));
+  if (n.kind === "component") return componentSpecimen(n.name, componentTag(n.name), n.height, !!design && themeNames(design.tokens).includes("dark"));
   if (n.kind === "tokens") return tokenSpecimen(source, n.name);
   return source;
 }

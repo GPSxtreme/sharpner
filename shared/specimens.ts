@@ -13,51 +13,26 @@ export function componentName(name: string) {
   return { family: parts[0] || "Component", variant: parts.length > 1 ? parts.slice(1).join(" / ") : "Default" };
 }
 
-/** Props share the exact placeholder grammar used by component expansion. */
-export function componentProps(source: string) {
-  const props = new Map<string, Set<string>>();
-  for (const match of source.matchAll(/\{\{\s*([\w-]+)\s*(?:\|([^}]*))?\}\}/g)) {
-    const name = match[1]!;
-    const values = props.get(name) ?? new Set<string>();
-    values.add((match[2] ?? "").trim());
-    props.set(name, values);
-  }
-  return [...props].map(([name, values]) => ({ name, defaults: [...values] }));
-}
-
 /*
- * A component is shown as itself: on its design system's own background, with room to breathe and one
- * quiet line naming its tag and props. The canvas label already names it, so there is no card chrome.
+ * A component is shown as itself and nothing else: its default instance on its design system's own background,
+ * with a little room around it. The canvas marks the node as a component (label and outline) and catalogs can set
+ * variants out as a table, so the preview carries no card chrome or caption. Tag and props come from MCP.
  */
 const componentStyles = `<style>
-.sp-component{box-sizing:border-box;display:flex;flex-direction:column;min-height:0;background:var(--color-background,#fff);color:var(--color-foreground,#242822);font:16px/1.5 var(--font-sans,ui-sans-serif,system-ui,sans-serif)}
+.sp-component{box-sizing:border-box;display:flex;min-height:0;background:var(--color-background,#fff);color:var(--color-foreground,#242822);font:16px/1.5 var(--font-sans,ui-sans-serif,system-ui,sans-serif)}
 .sp-component *{box-sizing:border-box}
-.sp-component-stage{display:grid;flex:1;place-items:center;min-height:120px;padding:40px 28px}
+.sp-component-stage{display:grid;flex:1;place-items:center;min-width:0;padding:12px}
 .sp-component-instance{display:grid;place-items:center;min-width:0;max-width:100%;width:100%}
-.sp-component-spec{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:12px 16px 14px;border-top:1px solid rgb(128 128 128/.16);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.6}
-.sp-component-tag{overflow-wrap:anywhere;font-weight:600}
-.sp-component-prop{overflow-wrap:anywhere}
-.sp-component-prop em{font-style:normal;opacity:.75}
-.sp-component--fixed{height:100vh;min-height:0}
+.sp-component--fixed{height:100vh}
 .sp-component--fixed .sp-component-stage{min-height:0;overflow:hidden}
-.sp-component--compact .sp-component-stage{padding:8px 10px}
 </style>`;
 
 /** `dark` presents the specimen in its design system's dark theme, on the document roots like a dark screen. */
-export function componentSpecimen(name: string, tag: string, source: string, height?: number | null, dark = false) {
+export function componentSpecimen(name: string, tag: string, height?: number | null, dark = false) {
   const { family, variant } = componentName(name);
   const fixed = typeof height === "number";
-  const compact = fixed && height < 220;
-  const props = componentProps(source);
-  const slot = /<slot[\s/>]/i.test(source);
-  const propItems = props.map(({ name, defaults }) => {
-    const value = defaults.length > 1 ? "multiple defaults" : defaults[0] ? `"${defaults[0]}"` : "empty";
-    return `<span class="sp-component-prop">${escapeHtml(name)} <em>${escapeHtml(value)}</em></span>`;
-  });
-  if (slot) propItems.push('<span class="sp-component-prop">slot <em>accepts content</em></span>');
-  const html = `${componentStyles}<article class="sp-component${fixed ? " sp-component--fixed" : ""}${compact ? " sp-component--compact" : ""}" aria-label="${escapeHtml(`${family} / ${variant} component`)}">
+  const html = `${componentStyles}<article class="sp-component${fixed ? " sp-component--fixed" : ""}" aria-label="${escapeHtml(`${family} / ${variant} component`)}">
 <div class="sp-component-stage"><div class="sp-component-instance"><${tag}></${tag}></div></div>
-${compact ? "" : `<footer class="sp-component-spec"><code class="sp-component-tag">&lt;${escapeHtml(tag)}&gt;</code>${propItems.join("")}</footer>`}
 </article>`;
   return dark ? bakeTheme(html, "dark") : html;
 }

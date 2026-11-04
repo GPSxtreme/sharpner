@@ -42,7 +42,7 @@ function fixture(options: ConstructorParameters<typeof ThumbnailCache>[1] = {}) 
       camera, size, pixelRatio: 2, ready: true, settled: true,
       previous: { liveIds: new Set(), imageIds: new Set() },
     });
-    paintRaster(canvas, size, camera, plan.sections, plan.rasterFrames, new Set(), new Map(), new Set(), [], {
+    paintRaster(canvas, size, camera, plan.sections, plan.rasterFrames, new Set(), new Map(), new Set(), { labels: [], tables: [], cells: new Set() }, {
       agent: new Map(), done: new Map(), appeared: new Map(), now: 0, reducedMotion: true,
     }, cache, { cache: highCache, ...upgrades });
     return plan;

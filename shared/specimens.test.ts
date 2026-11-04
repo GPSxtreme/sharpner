@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { componentName, componentProps, tokenSpecimen } from "./specimens";
+import { componentName, tokenSpecimen } from "./specimens";
 import { frameDocument, renderedHtml, tokenNames } from "./types";
 
 describe("component specimens", () => {
@@ -10,41 +10,24 @@ describe("component specimens", () => {
     const html = renderedHtml({ kind: "component", name: "Button/Primary" }, '<button>{{label|Continue}}</button>');
     expect(html).toContain('<x-button-primary></x-button-primary>');
     expect(html).toContain('aria-label="Button / Primary component"');
-    expect(html).toContain('label <em>&quot;Continue&quot;</em>');
     expect(html).not.toMatch(/Hover|Focus|Disabled/);
-    // The component shows as itself: no card header or badges duplicating the canvas label.
-    expect(html).not.toContain('<header');
+    // The component shows as itself: no card header, caption or badges. The canvas marks it as a component.
+    expect(html).not.toMatch(/<header|<footer|Continue|sp-component-spec/);
   });
 
-  it("summarizes actual defaults and slots without inserting sample content into the instance", () => {
-    const source = '<section title="{{label|Continue}}">{{label|Proceed}}<slot></slot>{{empty}}</section>';
-    expect(componentProps(source)).toEqual([
-      { name: "label", defaults: ["Continue", "Proceed"] },
-      { name: "empty", defaults: [""] },
-    ]);
-    const html = renderedHtml({ kind: "component", name: "Card" }, source);
-    expect(html).toContain('multiple defaults');
-    expect(html).toContain('accepts content');
+  it("shows the default instance without inserting sample content, at a fixed height when one is set", () => {
+    const html = renderedHtml({ kind: "component", name: "Card" }, '<section>{{label|Proceed}}<slot></slot></section>');
     expect(html).toContain('<x-card></x-card>');
-    expect(html).not.toContain('<x-card>Sample');
+    expect(html).toContain('class="sp-component"');
+    const fixed = renderedHtml({ kind: "component", name: "Button/Primary", height: 64 }, "<button>Continue</button>");
+    expect(fixed).toContain('class="sp-component sp-component--fixed"');
+    expect(fixed).toContain('<x-button-primary></x-button-primary>');
   });
 
-  it("keeps board chrome out of a legacy fixed-height component's preview", () => {
-    const compact = renderedHtml({ kind: "component", name: "Button/Primary", height: 64 }, "<button>Continue</button>");
-    expect(compact).toContain('sp-component--compact');
-    expect(compact).toContain('<x-button-primary></x-button-primary>');
-    expect(compact).not.toContain('<footer');
-    const automatic = renderedHtml({ kind: "component", name: "Button/Primary", height: null }, "<button>Continue</button>");
-    expect(automatic).not.toContain('class="sp-component sp-component--fixed');
-    expect(automatic).toContain('<footer class="sp-component-spec">');
-  });
-
-  it("escapes authored names and defaults in specimen metadata", () => {
-    const html = renderedHtml({ kind: "component", name: 'Button/<img src=x onerror="bad()">' }, '<button>{{label|<script>bad()</script>}}</button>');
+  it("escapes authored names in the specimen", () => {
+    const html = renderedHtml({ kind: "component", name: 'Button/<img src=x onerror="bad()">' }, '<button>Go</button>');
     expect(html).not.toContain('<img');
-    expect(html).not.toContain('<script>bad()');
     expect(html).toContain('&lt;img src=x onerror=&quot;bad()&quot;&gt;');
-    expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;');
   });
 
   it("presents components in dark when the design system defines a dark theme", () => {

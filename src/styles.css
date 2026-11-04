@@ -454,8 +454,10 @@ body:has(.editor) { --toast-offset: 84px; }
 .frame.tokens .frame-label { color: #f9a8d4; }
 .frame:hover .frame-label { color: var(--text); }
 .frame.selected .frame-label { color: var(--select); }
+/* Components keep a purple edge (COLORS.componentEdge in Canvas.tsx), so they read as definitions, not screens. */
+.frame.component .frame-body { box-shadow: 0 0 0 calc(1px * var(--inv)) rgb(192 132 252 / 0.6), 0 calc(10px * var(--inv)) calc(30px * var(--inv)) rgb(0 0 0 / 0.35); }
 .frame.selected .frame-body, .frame:hover .frame-body { box-shadow: 0 0 0 calc(1.5px * var(--inv)) var(--select), 0 calc(10px * var(--inv)) calc(30px * var(--inv)) rgb(0 0 0 / 0.35); }
-@media (hover: none) { .frame:hover:not(.selected) .frame-body { box-shadow: 0 0 0 calc(1px * var(--inv)) rgb(255 240 215 / 0.08), 0 calc(10px * var(--inv)) calc(30px * var(--inv)) rgb(0 0 0 / 0.35); } .frame:hover:not(.selected) .frame-label { color: var(--muted-text); } }
+@media (hover: none) { .frame:hover:not(.selected) .frame-body { box-shadow: 0 0 0 calc(1px * var(--inv)) rgb(255 240 215 / 0.08), 0 calc(10px * var(--inv)) calc(30px * var(--inv)) rgb(0 0 0 / 0.35); } .frame.component:hover:not(.selected) .frame-body { box-shadow: 0 0 0 calc(1px * var(--inv)) rgb(192 132 252 / 0.6), 0 calc(10px * var(--inv)) calc(30px * var(--inv)) rgb(0 0 0 / 0.35); } .frame:hover:not(.selected) .frame-label { color: var(--muted-text); } }
 .peer-ring { position: absolute; inset: 0; pointer-events: none; box-shadow: 0 0 0 calc(2px * var(--inv)) var(--peer); }
 
 .cursor { position: absolute; transform-origin: 0 0; transform: scale(var(--inv)); pointer-events: none; transition: left 60ms linear, top 60ms linear; }
