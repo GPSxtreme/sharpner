@@ -229,7 +229,20 @@ const MIGRATIONS = [
     const fileId = sql.exec<{ v: string }>(`SELECT v FROM meta WHERE k = 'fileId'`).toArray()[0]?.v;
     if (backfilling(fileId)) sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('backfill', '1')`);
   },
+  // The owner asked on 4 Nov 2026 for every preview in these files to be drawn again after the catalog-table
+  // restructure: frames, components and token sheets all re-render once, without waiting for a viewer.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'previewsRefreshed'`).toArray().length) return;
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('previewsRefreshed', '1')`);
+    const fileId = sql.exec<{ v: string }>(`SELECT v FROM meta WHERE k = 'fileId'`).toArray()[0]?.v;
+    if (!fileId || !REFRESHED_FILES.has(fileId)) return;
+    sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE ${RENDERED}`);
+    sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
+  },
 ];
+
+/** Files whose every preview the owner asked to redraw once on 4 Nov 2026: tupredices, fraxnet, fraxramp, sharpner. */
+const REFRESHED_FILES = new Set(["4d0f3398-96fd-4b9c-a8fc-dd7b1b75f437", "2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a", "c84c7946-be06-46d7-9b1d-c4486691dabb", "040cd02e-2da6-478a-b9a6-ff4d8d7c11cb"]);
 
 /** Files whose owner asked for every screen in dark; see the migration that uses it. */
 const DARK_ONLY_FILES = new Set(["2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a", "c84c7946-be06-46d7-9b1d-c4486691dabb", "4d0f3398-96fd-4b9c-a8fc-dd7b1b75f437"]);
