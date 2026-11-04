@@ -219,6 +219,16 @@ const MIGRATIONS = [
     sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE kind = 'component'`);
     sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
   },
+  // The owner cleared every component preview on 4 Nov 2026: each component renders once more, and backfill files
+  // restart their backfill so those previews render without a viewer.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'componentPreviewsCleared'`).toArray().length) return;
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('componentPreviewsCleared', '1')`);
+    sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE kind = 'component'`);
+    sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
+    const fileId = sql.exec<{ v: string }>(`SELECT v FROM meta WHERE k = 'fileId'`).toArray()[0]?.v;
+    if (backfilling(fileId)) sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('backfill', '1')`);
+  },
 ];
 
 /** Files whose owner asked for every screen in dark; see the migration that uses it. */
