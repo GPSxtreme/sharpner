@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiTokenGetter } from "./api";
 import { Room } from "./room";
 import { CanvasLayout } from "./canvas-layout";
+import { SECTION_GAP } from "../shared/layout";
 import type { CanvasNode, ClientMsg, CommentThread, ServerMsg } from "../shared/types";
 
 class Socket {
@@ -209,18 +210,18 @@ describe("cached canvas layout", () => {
     expect(geometry.rects.get("screen")).toEqual({ x: 0, y: 0, w: 400, h: 600 });
   });
 
-  it("refreshes geometry after an agent moves, resizes, deletes and creates designs", () => {
-    const socket = start([node("screen")]);
+  it("refreshes geometry after an agent reorders, resizes, deletes and creates designs", () => {
+    const socket = start([node("screen", { order: 1 })]);
     const layout = new CanvasLayout(room), before = layout.page("page_one");
-    synced(socket, "screen", { x: 80, y: 100 });
+    synced(socket, "intro", { order: 0, width: 240 });
     expect(layout.page("page_one")).not.toBe(before);
-    expect(layout.page("page_one").rects.get("screen")).toEqual({ x: 80, y: 100, w: 400, h: 600 });
+    expect(layout.page("page_one").rects.get("screen")).toEqual({ x: 240 + SECTION_GAP, y: 0, w: 400, h: 600 });
     synced(socket, "screen", { width: 500, height: 700 });
-    expect(layout.page("page_one").rects.get("screen")).toEqual({ x: 80, y: 100, w: 500, h: 700 });
-    socket.receive({ type: "sync", nodeDels: ["screen"], by: null });
+    expect(layout.page("page_one").rects.get("screen")).toEqual({ x: 240 + SECTION_GAP, y: 0, w: 500, h: 700 });
+    socket.receive({ type: "sync", nodeDels: ["screen", "intro"], by: null });
     expect(layout.page("page_one").rects.size).toBe(0);
     synced(socket, "replacement", { x: -40, y: 20, width: 100, height: 200 });
-    expect(layout.page("page_one").rects.get("replacement")).toEqual({ x: -40, y: 20, w: 100, h: 200 });
+    expect(layout.page("page_one").rects.get("replacement")).toEqual({ x: 0, y: 0, w: 100, h: 200 });
   });
 
   it("keeps zoomed panning free while cached navigation still locks the fitted overview", () => {
@@ -248,7 +249,7 @@ describe("cached canvas layout", () => {
   });
 
   it("refreshes catalog labels and partitions after component and section edits", () => {
-    const socket = start([node("catalog", { kind: "section", layout: "auto", height: null }), node("button", { kind: "component", name: "Button/Primary", parentId: "catalog", width: 180, height: 40 })]);
+    const socket = start([node("catalog", { kind: "section", height: null }), node("button", { kind: "component", name: "Button/Primary", parentId: "catalog", width: 180, height: 40 })]);
     const layout = new CanvasLayout(room);
     expect(layout.page("page_one").catalogs.has("catalog")).toBe(true);
     expect(layout.page("page_one").families.map((label) => label.family)).toEqual(["Button"]);
@@ -276,11 +277,11 @@ describe("cached canvas layout", () => {
   });
 
   it("follows node-relative pins and recomputes camera limits after viewport changes", () => {
-    const socket = start([node("screen", { x: 100, y: 200 })]), layout = new CanvasLayout(room);
+    const socket = start([node("screen", { order: 1 })]), layout = new CanvasLayout(room);
     socket.receive({ type: "comments", threads: [{ ...feedback, anchor: { pageId: "page_one", nodeId: "screen", x: 10, y: 20 } }] });
-    expect(layout.navigation("page_one", viewport).navigationRects).toContainEqual({ x: 110, y: 220, w: 1, h: 1 });
-    synced(socket, "screen", { x: 1000, y: -2000 });
-    expect(layout.navigation("page_one", viewport).navigationRects).toContainEqual({ x: 1010, y: -1980, w: 1, h: 1 });
+    expect(layout.navigation("page_one", viewport).navigationRects).toContainEqual({ x: 10, y: 20, w: 1, h: 1 });
+    synced(socket, "intro", { order: 0, width: 1000 });
+    expect(layout.navigation("page_one", viewport).navigationRects).toContainEqual({ x: 1000 + SECTION_GAP + 10, y: 20, w: 1, h: 1 });
     const geometry = layout.page("page_one"), wide = layout.navigation("page_one", viewport);
     const narrow = layout.navigation("page_one", { w: 390, h: 400 });
     expect(layout.page("page_one")).toBe(geometry);

@@ -34,12 +34,11 @@ export type CanvasNode = {
   parentId: string | null;
   kind: NodeKind;
   name: string;
+  /** Position stored before every section was automatic. Layout ignores it; see layoutRects for the real one. */
   x: number;
   y: number;
-  /** Stable sibling order for automatic layout. Optional only for older client metadata. */
+  /** Stable sibling order: the only thing besides size that decides where a node sits. Optional only for older client metadata. */
   order?: number;
-  /** Sections: automatic wrapping rows, or freely positioned contents. Missing means legacy free layout. */
-  layout?: "auto" | "free";
   /** Sections: what the group holds and when to look at it, for agent navigation. Omitted when empty. */
   description?: string;
   width: number;
@@ -67,7 +66,7 @@ export const previewCurrent = (node: Pick<CanvasNode, "rev" | "thumbRev" | "thum
   !!node.thumbHi && (node.thumbRev === undefined || node.thumbRev >= node.rev);
 
 /** Fields a client or agent may set. `source` is HTML for frames and components, CSS for token sheets. */
-export type NodeInput = Partial<Pick<CanvasNode, "pageId" | "parentId" | "kind" | "name" | "x" | "y" | "order" | "layout" | "description" | "width" | "height" | "src" | "thumbLo">> & {
+export type NodeInput = Partial<Pick<CanvasNode, "pageId" | "parentId" | "kind" | "name" | "order" | "description" | "width" | "height" | "src" | "thumbLo">> & {
   source?: string;
 };
 

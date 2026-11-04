@@ -30,8 +30,8 @@ Agents write the designs and inspect their rendered screenshots.
   Preview navigation stays around the designs, with the fitted overview as its
   zoom-out limit. Controls stay out of the way in a compact floating dock.
 - **Sections that breathe.** Screens flow into rows, catalogs and other groups
-  tile into balanced columns, and content height changes reflow the layout. Drag to reorder; use free layout
-  when positioning matters.
+  tile into balanced columns, and content height changes reflow the layout. Agents
+  arrange pages by order and grouping, so nothing overlaps.
 - **A workspace for the team.** Searchable files with preview cards, live cursors,
   an active-member avatar stack, shared selections, and a visible indication of
   what an agent is working on.

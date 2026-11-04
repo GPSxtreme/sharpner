@@ -43,15 +43,15 @@ Read only the reference needed for the task. A single graphic or slide can skip 
 
 Geometry uses canvas pixels: x increases rightward; y increases downward. Width sets the HTML viewport.
 
+Sharpner places every node. You can't set a position. Order, size and grouping decide the layout, so nodes never overlap.
+
 - Omit height, or set it to null, to fit content. Preserve this choice for `heightMode: auto` nodes; measured height can change.
-- New sections use automatic layout. Add children with `sectionId` and omit x/y. Use `order` to change their sequence.
+- Put nodes in sections with `sectionId`. Use `order` to change their sequence; lower values come first.
 - Screens wrap after about four desktop or thirteen phone widths. Other nodes wrap after four previews.
-- Sections with screens each use a row. Other sibling sections fill about √n columns from top to bottom.
+- Consecutive sibling sections tile in columns, top to bottom. Sections with screens form a landscape block. Other sections fill about √n columns.
+- A node between sections starts a new row. Keep sibling sections together to tile them.
 - Sections with only components form catalogs. Each family gets a row and one label. A tall catalog stacks its families in columns so it grows about as wide as it is tall. Keep its variants together.
-- Free sections or loose nodes force top-level automatic sections into one column. `get_file` and `list_pages` explain this as `stacked`.
-- Set those sections to `layout: "auto"` or put loose nodes in sections to restore columns.
-- `layout: "free"` preserves current positions. Its x/y move the section's visible top-left and all children. Legacy sections stay free until changed.
-- `sectionId: null` removes a parent. `pageId` moves to another page. Without x/y, a moved loose node lands right of that page's content. New loose nodes also default to the right.
+- The page arranges its top-level nodes the same way. `sectionId: null` moves a node there. `pageId` moves it to another page.
 
 ## Address comments when asked
 

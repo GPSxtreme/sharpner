@@ -57,7 +57,7 @@ The preview that represents a file in the workspace. An agent can choose a frame
 _Avoid_: Thumbnail (when referring to the chosen design rather than its rendered image), cover node kind
 
 **Section**:
-A labeled group that wraps the nodes inside it and can contain other sections. Like a page, it can carry a description for agent navigation. New sections arrange their contents automatically in ordered rows; sections of screens (flows) take a row each, and other sibling sections tile into columns. A section can use free layout for explicit positioning. Existing manual sections retain free layout.
+A labeled group that wraps the nodes inside it and can contain other sections. Like a page, it can carry a description for agent navigation. Every section arranges its contents automatically, in order: nodes in rows, and consecutive sibling sections tiled into columns. Sections of screens (flows) tile toward a landscape block. Nothing on a page is placed by hand, so nodes never overlap.
 _Avoid_: Group, area, container, folder
 
 **Selection**:

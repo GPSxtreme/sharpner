@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commentPoint } from "../shared/comments";
-import { layoutHeight, layoutRects } from "../shared/layout";
+import { layoutHeight, layoutRects, SECTION_GAP } from "../shared/layout";
 import type { Actor, ServerMsg } from "../shared/types";
 
 vi.mock("cloudflare:workers", () => ({
@@ -88,14 +88,15 @@ describe("persistent file comments", () => {
   it("keeps pins on designs through layout changes, page moves and deletion", async () => {
     const { room, pageId, apply } = fixture();
     await apply([
-      { t: "node.put", id: "section", node: { pageId, kind: "section", x: 300, y: 600 } },
+      { t: "node.put", id: "section", node: { pageId, kind: "section" } },
       { t: "node.put", id: "screen", node: { pageId, parentId: "section", width: 400, height: 600 } },
     ]);
     const thread = room.createComment("file", { pageId, nodeId: "screen", x: 70, y: 90 }, "Make this button clearer.", human);
     const point = () => commentPoint(room.comment(thread.id).anchor, layoutRects(room.nodes(), layoutHeight));
     const initial = point();
-    await apply([{ t: "node.put", id: "section", node: { x: 600 } }]);
-    expect(point()).toEqual({ x: initial.x + 300, y: initial.y });
+    // A screen placed before the section takes the first row, so the section and its pin move below it.
+    await apply([{ t: "node.put", id: "intro", node: { pageId, kind: "frame", width: 400, height: 600, order: -1 } }]);
+    expect(point()).toEqual({ x: initial.x, y: initial.y + 600 + SECTION_GAP });
     await apply([{ t: "page.put", page: { id: "second", name: "Second", sort: 1 } }, { t: "node.put", id: "screen", node: { pageId: "second", parentId: null } }]);
     expect(room.comment(thread.id).anchor.pageId).toBe("second");
     const beforeDelete = point();

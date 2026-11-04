@@ -5,8 +5,8 @@ import { z } from "zod";
 import { authenticate, authErrorStatus, requireScope, type AppEnv, type Identity } from "./auth";
 import { oauthChallenge } from "./oauth";
 import { createFile, fileFor, filesFor, MAX_UPLOAD, putFile, room, setLibrary, workspaceFor, workspacesFor } from "./data";
-import { layoutHeight, layoutRects, pageArrangement, union, type Rect } from "../shared/layout";
-import { componentTag, DESCRIPTION_MAX, tokenNames, type Actor, type CanvasNode, type NodeInput, type Op, type Page } from "../shared/types";
+import { layoutHeight, layoutRects, type Rect } from "../shared/layout";
+import { componentTag, DESCRIPTION_MAX, tokenNames, type Actor, type NodeInput, type Op, type Page } from "../shared/types";
 import { themeNames } from "../shared/themes";
 import skill from "./skills/sharpner/SKILL.md?raw";
 import designSystemGuide from "./skills/sharpner/references/design-system.md?raw";
@@ -230,7 +230,7 @@ function buildServer(env: Env, identity: Identity, origin: string) {
     const { file, stub } = await access(fileId);
     const outline = await stub.outline();
     const pages = outline.map((p) => ({
-      id: p.id, name: p.name, description: p.description ?? "", ...(p.kind && { kind: p.kind }), ...arrangementOf(p.nodes),
+      id: p.id, name: p.name, description: p.description ?? "", ...(p.kind && { kind: p.kind }),
       designs: p.nodes.filter((n) => n.kind !== "section").length,
       sections: p.nodes.filter((n) => n.kind === "section").map((s) => ({
         id: s.id, name: s.name, description: s.description ?? "", parentId: s.parentId,
@@ -258,8 +258,7 @@ function buildServer(env: Env, identity: Identity, origin: string) {
         name: p.name,
         description: p.description ?? "",
         ...(p.kind && { kind: p.kind }),
-        ...arrangementOf(p.nodes),
-        sections: p.nodes.filter((n) => n.kind === "section").map((n) => ({ id: n.id, name: n.name, description: n.description ?? "", parentId: n.parentId, layout: n.layout ?? "free", order: n.order, ...rects.get(n.id) })),
+        sections: p.nodes.filter((n) => n.kind === "section").map((n) => ({ id: n.id, name: n.name, description: n.description ?? "", parentId: n.parentId, order: n.order, ...rects.get(n.id) })),
         nodes: p.nodes.filter((n) => n.kind !== "section").map((n) => ({
           id: n.id, kind: n.kind, name: n.name, sectionId: n.parentId, order: n.order,
           ...nodeGeometry(n, rects),
@@ -379,42 +378,25 @@ function buildServer(env: Env, identity: Identity, origin: string) {
     return json({ ok: true });
   });
 
-  /** Where to auto-place new nodes: right of the section's contents, or right of everything on the page. */
-  const placement = (nodes: CanvasNode[], sectionId: string | null, gap: number) => {
-    const rects = layoutRects(nodes, (n) => layoutHeight(n));
-    const siblings = nodes.filter((n) => n.parentId === sectionId).map((n) => rects.get(n.id)!);
-    if (siblings.length) {
-      const r = union(siblings);
-      return { x: r.x + r.w + gap, y: r.y };
-    }
-    const section = nodes.find((n) => n.id === sectionId);
-    return section ? { x: section.x, y: section.y } : { x: 0, y: 0 };
-  };
-
   server.registerTool("create_section", {
-    description: "Create a section, optionally nested. Auto layout arranges children; omit x/y and add nodes with create_nodes.sectionId. Use free layout for manual positions.",
+    description: "Create a section, optionally nested. It arranges its contents by order; add nodes with create_nodes.sectionId.",
     inputSchema: {
       fileId: z.string(),
       name: z.string(),
       pageId: z.string().optional().describe("Defaults to the page the user is viewing, else the first page"),
       parentSectionId: z.string().optional(),
       description: sectionDescription.optional(),
-      layout: z.enum(["auto", "free"]).optional().describe("Default auto. Free uses manual positions."),
-      x: z.number().optional(),
-      y: z.number().optional(),
     },
-  }, async ({ fileId, name, description, pageId, parentSectionId, layout = "auto", x, y }) => {
+  }, async ({ fileId, name, description, pageId, parentSectionId }) => {
     const { stub, apply } = await access(fileId);
     const page = await targetPage(stub, user.id, pageId, parentSectionId);
-    const existingStack = !parentSectionId && layout === "auto" ? page.nodes.filter((n) => !n.parentId && n.kind === "section" && n.layout === "auto") : [];
-    const at = existingStack.length ? { x: Math.min(...existingStack.map((n) => n.x)), y: Math.min(...existingStack.map((n) => n.y)) } : placement(page.nodes, parentSectionId ?? null, 160);
     const id = crypto.randomUUID();
-    await apply([{ t: "node.put", id, node: { kind: "section", pageId: page.id, parentId: parentSectionId ?? null, layout, name, description, x: x ?? at.x, y: y ?? at.y } }]);
-    return json({ sectionId: id, pageId: page.id, layout });
+    await apply([{ t: "node.put", id, node: { kind: "section", pageId: page.id, parentId: parentSectionId ?? null, name, description } }]);
+    return json({ sectionId: id, pageId: page.id });
   });
 
   server.registerTool("create_nodes", {
-    description: "Create frames and components from HTML source, token sheets from CSS source, or images from imageUrl. Default kind is frame. In auto sections, omit x/y. Return IDs and computed bounds.",
+    description: "Create frames and components from HTML source, token sheets from CSS source, or images from imageUrl. Default kind is frame. They join the end of the section or page. Return IDs and computed bounds.",
     inputSchema: {
       fileId: z.string(),
       pageId: z.string().optional().describe("Defaults to the section's page, else the page the user is viewing, else the first page"),
@@ -427,21 +409,16 @@ function buildServer(env: Env, identity: Identity, origin: string) {
         previewUrl: z.string().optional().describe("Small image preview. Omit to generate one if Browser Rendering is available."),
         width: z.number().positive().optional().describe("Viewport width in px. Default 400; token sheets default to 960."),
         height: z.number().positive().nullish().describe("Fixed height in px; omit to fit content"),
-        x: z.number().optional(),
-        y: z.number().optional(),
       })).min(1).max(20),
     },
   }, async ({ fileId, pageId, sectionId, nodes }) => {
     const { stub, apply } = await access(fileId);
     const page = await targetPage(stub, user.id, pageId, sectionId);
-    let at = placement(page.nodes, sectionId ?? null, 80);
     const created = nodes.map((n) => {
       const kind = n.kind ?? "frame";
       if (kind === "image" ? !n.imageUrl : n.source === undefined) throw new Error(`"${n.name}" needs ${kind === "image" ? "imageUrl" : "source"}`);
       const width = n.width ?? (kind === "tokens" ? 960 : 400);
-      const x = n.x ?? at.x, y = n.y ?? at.y;
-      at = { x: Math.max(at.x, x + width + 80), y: at.y };
-      const base = { kind, pageId: page.id, parentId: sectionId ?? null, name: n.name, width, x, y };
+      const base = { kind, pageId: page.id, parentId: sectionId ?? null, name: n.name, width };
       const node: NodeInput = kind === "image"
         ? { ...base, src: n.imageUrl, thumbLo: n.previewUrl ?? null, height: n.height ?? width }
         : { ...base, source: n.source, height: n.height ?? null };
@@ -480,7 +457,6 @@ function buildServer(env: Env, identity: Identity, origin: string) {
         kind: node.kind,
         name: node.name,
         sectionId: node.parentId,
-        layout: node.kind === "section" ? node.layout ?? "free" : undefined,
         order: node.order,
         ...nodeGeometry(node, rects),
         ...(node.kind === "image" ? { src: abs(node.src) } : { source: node.source }),
@@ -489,54 +465,29 @@ function buildServer(env: Env, identity: Identity, origin: string) {
   });
 
   server.registerTool("update_nodes", {
-    description: "Update nodes or sections. height:null fits content. In auto sections, omit x/y and use order. sectionId:null removes the parent. pageId moves to another page.",
+    description: "Update nodes or sections. height:null fits content. order sets position among siblings. sectionId:null moves to the page's top level. pageId moves to another page.",
     inputSchema: {
       fileId: z.string(),
       updates: z.array(z.object({
         nodeId: z.string(),
         pageId: z.string().optional(),
         sectionId: z.string().nullable().optional(),
-        layout: z.enum(["auto", "free"]).optional().describe("Sections only. Legacy sections default to free."),
-        order: z.number().finite().optional().describe("Auto layout sibling order. Lower values come first. New nodes append."),
+        order: z.number().finite().optional().describe("Sibling order. Lower values come first. New nodes append."),
         name: z.string().optional(),
         description: sectionDescription.optional(),
         source: z.string().optional(),
         width: z.number().positive().optional(),
         height: z.number().positive().nullish(),
-        x: z.number().optional(),
-        y: z.number().optional(),
       })).min(1).max(50),
     },
   }, async ({ fileId, updates }) => {
     const { stub, apply } = await access(fileId);
-    const all = await stub.nodes();
-    const nodesById = new Map(all.map((node) => [node.id, node]));
-    const missing = updates.filter((update) => !nodesById.has(update.nodeId)).map((update) => update.nodeId);
+    const all = new Set((await stub.nodes()).map((node) => node.id));
+    const missing = updates.filter((update) => !all.has(update.nodeId)).map((update) => update.nodeId);
     if (missing.length) throw new Error(`Nodes not found: ${missing.join(", ")}`);
-    const rects = layoutRects(all, (n) => layoutHeight(n));
-    const arrivals: CanvasNode[] = [];
     await apply(updates.map(({ nodeId, sectionId, ...patch }) => {
-      const cur = nodesById.get(nodeId)!;
       const node = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as NodeInput;
       if (sectionId !== undefined) node.parentId = sectionId;
-      // Moving loose to another page without coordinates: land to the right of that page's content (and of
-      // anything moved there in this call) instead of reusing a position from the old page. Automatic
-      // sections join that page's arrangement instead, so their stored position must not move its origin.
-      const joinsLayout = cur.kind === "section" && (patch.layout ?? cur.layout) === "auto";
-      if (patch.pageId !== undefined && patch.pageId !== cur.pageId && !sectionId && !joinsLayout && patch.x === undefined && patch.y === undefined) {
-        const target = [...all.filter((n) => n.pageId === patch.pageId), ...arrivals.filter((n) => n.pageId === patch.pageId)];
-        Object.assign(node, placement(target, null, 160));
-        const r = rects.get(cur.id)!;
-        arrivals.push({ ...cur, id: `${cur.id}:arrival`, kind: "frame", parentId: null, pageId: patch.pageId, x: node.x!, y: node.y!, width: r.w, height: r.h });
-      }
-      // A section's x/y refer to its visible bounds; the whole section moves with its contents.
-      const reparented = sectionId !== undefined && sectionId !== cur.parentId || patch.pageId !== undefined && patch.pageId !== cur.pageId;
-      const relayout = patch.layout !== undefined && patch.layout !== cur.layout;
-      if (cur.kind === "section" && !reparented && !relayout) {
-        const r = rects.get(cur.id)!;
-        if (patch.x !== undefined) node.x = cur.x + (patch.x - r.x);
-        if (patch.y !== undefined) node.y = cur.y + (patch.y - r.y);
-      }
       return { t: "node.put", id: nodeId, node } as Op;
     }));
     return json({ ok: true, updated: updates.length });
@@ -622,20 +573,6 @@ function buildServer(env: Env, identity: Identity, origin: string) {
 }
 
 /** Tool responses expose computed bounds, while heightMode retains the node's authored sizing choice. */
-/** Whether a page tiles its automatic top-level sections, and if they stay in one column, what to change. */
-function arrangementOf(nodes: CanvasNode[]) {
-  const page = pageArrangement(nodes);
-  if (page.arrangement !== "stacked") return { arrangement: page.arrangement };
-  const free = page.stackedBy.filter((n) => n.kind === "section"), loose = page.stackedBy.length - free.length;
-  const named = free.slice(0, 5).map((n) => `"${n.name}"`).join(", ") + (free.length > 5 ? ` and ${free.length - 5} more` : "");
-  const causes = [free.length ? `free section${free.length === 1 ? "" : "s"} ${named}` : "", loose ? `${loose} loose node${loose === 1 ? "" : "s"}` : ""];
-  return {
-    arrangement: page.arrangement,
-    reason: `Automatic sections stay in one column because of ${causes.filter(Boolean).join(" and ")}. Set those sections to layout "auto", or move loose nodes into a section, to let the page tile.`,
-    stackedBy: page.stackedBy.map((n) => ({ id: n.id, name: n.name, kind: n.kind })),
-  };
-}
-
 function nodeGeometry(node: { id: string; height?: number | null }, rects: ReadonlyMap<string, Rect>) {
   const rect = rects.get(node.id)!;
   return {

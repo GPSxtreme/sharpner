@@ -26,10 +26,10 @@ const node = (id: string, patch: Partial<CanvasNode> = {}): CanvasNode => ({
 });
 const outline = [
   { id: "ds", name: "Design System", sort: 0, description: "Token sheet and component catalogs. Check before building screens.", nodes: [
-    node("tokens", { kind: "section", layout: "auto", description: "The file's one token sheet." }),
+    node("tokens", { kind: "section", description: "The file's one token sheet." }),
     node("sheet", { kind: "tokens", parentId: "tokens" }),
-    node("components", { kind: "section", layout: "auto" }),
-    node("forms", { kind: "section", layout: "auto", parentId: "components", description: "Inputs and validation states." }),
+    node("components", { kind: "section" }),
+    node("forms", { kind: "section", parentId: "components", description: "Inputs and validation states." }),
     node("field", { kind: "component", name: "Field", parentId: "forms" }),
     node("select", { kind: "component", name: "Select", parentId: "forms" }),
   ] },
@@ -72,25 +72,24 @@ describe("page and section descriptions for agents", () => {
   it("lists pages and sections with their descriptions and direct design counts, and flags missing ones", async () => {
     const { value } = await call("list_pages", { fileId: "file" });
     expect(value.pages).toEqual([
-      { id: "ds", name: "Design System", description: outline[0]!.description, arrangement: "tiled", designs: 3, sections: [
+      { id: "ds", name: "Design System", description: outline[0]!.description, designs: 3, sections: [
         { id: "tokens", name: "tokens", description: "The file's one token sheet.", parentId: null, designs: 1 },
         { id: "components", name: "components", description: "", parentId: null, designs: 0 },
         { id: "forms", name: "forms", description: "Inputs and validation states.", parentId: "components", designs: 2 },
       ] },
-      { id: "screens", name: "Screens", description: "", arrangement: "manual", designs: 1, sections: [] },
+      { id: "screens", name: "Screens", description: "", designs: 1, sections: [] },
     ]);
     expect(value.hint).toMatch(/no description/);
   });
 
-  it("says when hand-placed content keeps a page's automatic sections in one column", async () => {
-    mocks.outline.mockResolvedValue([{ ...outline[0]!, nodes: [...outline[0]!.nodes,
-      node("placed", { kind: "section", layout: "free", name: "Components (placed)" }), node("loose-1"), node("loose-2")] }]);
-    const page = (await call("list_pages", { fileId: "file" })).value.pages[0];
-    expect(page).toMatchObject({ arrangement: "stacked", stackedBy: [
-      { id: "placed", name: "Components (placed)", kind: "section" }, { id: "loose-1", name: "loose-1", kind: "frame" }, { id: "loose-2", name: "loose-2", kind: "frame" },
-    ] });
-    expect(page.reason).toBe('Automatic sections stay in one column because of free section "Components (placed)" and 2 loose nodes. Set those sections to layout "auto", or move loose nodes into a section, to let the page tile.');
-    expect((await call("get_file", { fileId: "file", pageId: "ds" })).value.pages[0]).toMatchObject({ arrangement: "stacked", reason: page.reason });
+  it("reports computed bounds for sections and loose nodes, with no layout mode or stored position", async () => {
+    mocks.outline.mockResolvedValue([{ ...outline[0]!, nodes: [...outline[0]!.nodes, node("loose", { x: 9000, y: 9000, order: 99 })] }]);
+    const page = (await call("get_file", { fileId: "file", pageId: "ds" })).value.pages[0];
+    expect(page).not.toHaveProperty("arrangement");
+    for (const section of page.sections) expect(section).not.toHaveProperty("layout");
+    const loose = page.nodes.find((n: { id: string }) => n.id === "loose");
+    expect(loose.x).not.toBe(9000);
+    expect((await call("list_pages", { fileId: "file" })).value.pages[0]).not.toHaveProperty("arrangement");
   });
 
   it("reads a single page with descriptions, and rejects an unknown page", async () => {
@@ -108,6 +107,15 @@ describe("page and section descriptions for agents", () => {
     const [page, section] = applied();
     expect(page).toMatchObject({ t: "page.put", page: { name: "Flows", sort: 2, description: "Onboarding and checkout flows." } });
     expect(section).toMatchObject({ t: "node.put", node: { kind: "section", name: "Onboarding", description: "Sign-up to first market." } });
+  });
+
+  it("ignores the layout mode and positions agents used to pass", async () => {
+    await call("create_section", { fileId: "file", pageId: "screens", name: "Placed", layout: "free", x: 4000, y: 200 });
+    await call("create_nodes", { fileId: "file", pageId: "screens", nodes: [{ name: "Screen", source: "<main></main>", x: 10, y: 20 }] });
+    await call("update_nodes", { fileId: "file", updates: [{ nodeId: "home", layout: "free", x: 10, y: 20, order: 3 }] });
+    const [section, screen, home] = applied() as Extract<Op, { t: "node.put" }>[];
+    for (const op of [section!, screen!, home!]) for (const key of ["layout", "x", "y"]) expect(op.node).not.toHaveProperty(key);
+    expect(home!.node).toEqual({ order: 3 });
   });
 
   it("renames without touching the description, and describes or clears it on request", async () => {
@@ -150,31 +158,18 @@ describe("component usage", () => {
 });
 
 describe("moving nodes between pages", () => {
-  it("lands free sections and loose nodes right of the target page's content, without stacking them", async () => {
-    mocks.outline.mockResolvedValue([outline[0]!, { ...outline[1]!, nodes: [
-      node("home", { pageId: "screens" }),
-      node("auto", { pageId: "screens", kind: "section", layout: "auto", x: 0, y: 900 }),
-    ] }, { id: "extra", name: "Extra", sort: 2, nodes: [node("free", { pageId: "extra", kind: "section", layout: "free" }), node("inside", { pageId: "extra", parentId: "free", x: 4000, y: 4000 })] }]);
+  it("sends only the new page and parent, so moved nodes join the target page's arrangement", async () => {
     await call("update_nodes", { fileId: "file", updates: [
       { nodeId: "tokens", pageId: "screens", sectionId: null },
-      { nodeId: "free", pageId: "screens", sectionId: null },
-      { nodeId: "sheet", pageId: "screens", sectionId: null, x: 10, y: 20 },
+      { nodeId: "field", pageId: "screens", sectionId: null },
     ] });
-    const [tokens, free, sheet] = applied() as Extract<Op, { t: "node.put" }>[];
-    // "tokens" is an automatic section: it joins the page's arrangement, so its position is left alone.
-    expect(tokens!.node).not.toHaveProperty("x");
-    // Right of the page's widest content: the 480 px empty automatic section.
-    const right = 480 + 160;
-    expect(free!.node).toMatchObject({ x: right, y: 0 });
-    expect(sheet!.node).toMatchObject({ x: 10, y: 20 });
-    await call("update_nodes", { fileId: "file", updates: [{ nodeId: "free", pageId: "screens" }, { nodeId: "home", pageId: "extra" }, { nodeId: "field", pageId: "screens", sectionId: null }] });
-    const [, , , again, home, field] = applied() as Extract<Op, { t: "node.put" }>[];
-    expect(again!.node).toMatchObject({ x: right, y: 0 });
-    expect(home!.node).toMatchObject({ x: 4000 + 400 + 128 + 160, y: 4000 - 128 });
-    // A second arrival lands beside the first instead of on top of it.
-    expect(field!.node.x).toBeGreaterThan(again!.node.x! + 400);
+    expect(applied()).toEqual([
+      { t: "node.put", id: "tokens", node: { pageId: "screens", parentId: null } },
+      { t: "node.put", id: "field", node: { pageId: "screens", parentId: null } },
+    ]);
   });
 });
+
 
 
 
@@ -191,13 +186,13 @@ describe("agent Design System canvas pages and Brand", () => {
     expect((await call("update_page", { fileId: "file", pageId: "ds", kind: "other" })).isError).toBe(true);
   });
 
-  it("reports canvas arrangement, Brand and primitive locations and patches only requested fields", async () => {
+  it("reports Design System pages, Brand and primitive locations and patches only requested fields", async () => {
     mocks.outline.mockResolvedValue([{ ...outline[0]!, kind: "design-system" }, outline[1]!]);
     mocks.brand.mockReturnValue({ ...emptyBrand(), name: "FraxNet", voice: ["Plain verbs"] });
     const system = (await call("get_design_system", { fileId: "file" })).value;
     expect(system).toMatchObject({ brand: { name: "FraxNet", voice: ["Plain verbs"] }, designSystemPageId: "ds", components: [{ primitive: true, pageId: "ds" }, { primitive: true, pageId: "ds" }] });
-    expect((await call("list_pages", { fileId: "file" })).value.pages[0]).toMatchObject({ kind: "design-system", arrangement: "tiled" });
-    expect((await call("get_file", { fileId: "file", pageId: "ds" })).value.pages[0]).toMatchObject({ kind: "design-system", arrangement: "tiled" });
+    expect((await call("list_pages", { fileId: "file" })).value.pages[0]).toMatchObject({ kind: "design-system" });
+    expect((await call("get_file", { fileId: "file", pageId: "ds" })).value.pages[0]).toMatchObject({ kind: "design-system" });
     await call("set_brand", { fileId: "file", guidelines: "Paper and ink." });
     expect(applied()).toEqual([{ t: "brand.set", brand: { guidelines: "Paper and ink." } }]);
     await call("create_nodes", { fileId: "file", pageId: "ds", nodes: [{ kind: "component", name: "Button/Default", source: "<button>Go</button>" }] });

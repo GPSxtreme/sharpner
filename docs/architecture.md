@@ -94,6 +94,17 @@ Deleting the chosen node, its containing section or its page clears the choice.
 `coverNodeId` to keep the canvas current. Agent-authored covers conventionally
 live as fixed 1600 × 900 HTML frames on a described Cover page.
 
+Layout is automatic everywhere. `layoutRects` in `shared/layout.ts` places every
+node from its order, size and section: nodes in rows, consecutive sibling
+sections tiled in columns, and each page's top-level nodes the same way from the
+origin. Nothing is positioned by hand, so nodes never overlap. A run of sections
+that holds screens picks the column count closest to a 1.6:1 block from stored
+heights; heights a live view reports move a section down its column but never
+into another, so every viewer and agent sees the same columns. Stored x/y remain
+in FileRoom storage but layout ignores them. The migration that made every
+section automatic lists the formerly free sections under the `freeSections` meta
+key.
+
 Each mounted canvas keeps one world-layout snapshot. Camera movement, presence,
 source delivery, preview loading and agent effects reuse its rectangles and
 catalog labels. Node/page changes and measured heights

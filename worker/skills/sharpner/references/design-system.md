@@ -10,7 +10,7 @@ A single graphic, exploration, or slide can use one token sheet or skip the syst
 
 Keep the Design System on the ordinary canvas. Use one page named **Design System**, marked with `create_page({ fileId, name: "Design System", kind: "design-system" })` or `update_page({ fileId, pageId, kind: "design-system" })`. The marker identifies primitives; it does not change the canvas view. Changing it preserves every node. Members choose **Use as Design System page** from page options.
 
-Use the same three ordinary sections across files, in this order. Create them with `layout: "auto"`, add nodes with `sectionId`, and omit x/y. Use section `order` values 0, 1 and 2. Keep the names consistent; let the file's brand determine their visual content. Keep all three automatic and the page free of hand-placed sections or loose nodes: one would stack the sections in a single tall column.
+Use the same three ordinary sections across files, in this order. Add nodes with `sectionId`. Use section `order` values 0, 1 and 2. Keep the names consistent; let the file's brand determine their visual content.
 
 1. **01 · Brand:** one editable HTML frame with the brand name, image logo, one short guidelines paragraph and a few voice bullets. Use the file's tokens and keep it readable at a useful canvas zoom. Keep the corresponding file metadata in `set_brand({ fileId, name, logoUrl, guidelines, voice })` aligned with the frame; changing metadata does not rewrite the frame. Omitted metadata fields stay unchanged; empty strings/arrays clear them. Use `upload_image` for a permanent logo URL. `get_design_system` returns Brand and the marked page ID.
 2. **02 · Foundations:** place the file's token sheets here. Their existing canvas previews show colors by theme, then typography, spacing, radii and shadows. Recommended semantic color slots come first, with CSS comments as descriptions or utility classes as fallbacks. Show only defined tokens. Preserve existing brand-specific token names; alias recommended slots to their brand values with `var(...)`. Do not duplicate token values in hand-written swatch boards.
@@ -46,7 +46,7 @@ Tags apply across the file. Prefix feature component names, such as `Trade/Order
 
 A library exports all its own tokens and components, regardless of page. Use a separate file for shared foundations and primitives. Libraries do not export their linked library's definitions. Local definitions override library definitions.
 
-Create automatic sections and omit coordinates. Sections with only components form catalogs with one row per family, such as Chip in `Chip/Active`, arranged in columns when the catalog is tall. Keep variants together. Use `order` to change sequence. Keep screens and token sheets outside component catalogs. The main skill describes automatic and free layout.
+Sections with only components form catalogs with one row per family, such as Chip in `Chip/Active`, arranged in columns when the catalog is tall. Keep variants together. Use `order` to change sequence. Keep screens and token sheets outside component catalogs. The main skill describes layout.
 
 ## Define tokens
 

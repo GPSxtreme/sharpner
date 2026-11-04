@@ -213,7 +213,7 @@ describe("thumbnail scheduling", () => {
     const {create,apply,room,db} = fixture();
     await create("screen");
     await apply([{t:"node.del",ids:["screen"]}]);
-    await apply([{t:"node.put",id:"screen",node:{x:120,y:40}}]);
+    await apply([{t:"node.put",id:"screen",node:{name:"Late rename"}}]);
     expect(room.node("screen")).toBeFalsy();
     expect(db.prepare("SELECT COUNT(*) AS n FROM nodes").get()).toEqual({n:0});
   });
@@ -346,7 +346,7 @@ describe("dark-only migration", () => {
   const FRAXNET = "2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a";
   /** Replays the migration as an existing room would see it on its next wake-up. */
   const replay = (db: DatabaseSync, fileId: string) => {
-    db.exec(`DELETE FROM meta WHERE k = 'darkSpecimens'; UPDATE meta SET v = '${fileId}' WHERE k = 'fileId'; UPDATE meta SET v = v - 4 WHERE k = 'schema'`);
+    db.exec(`DELETE FROM meta WHERE k = 'darkSpecimens'; UPDATE meta SET v = '${fileId}' WHERE k = 'fileId'; UPDATE meta SET v = v - 5 WHERE k = 'schema'`);
   };
 
   it("darkens every screen of a dark-only file and re-renders all its previews", async () => {
@@ -366,7 +366,7 @@ describe("dark-only migration", () => {
       expect(db.prepare("SELECT rev, thumb_lo, tries FROM node_thumbnails WHERE node_id = ? AND theme = ''").get(id)).toEqual({ rev: rev + 1, thumb_lo: null, tries: 0 });
     }
     // Runs once: a later replay of the recorded schema leaves the room alone.
-    db.exec("UPDATE meta SET v = v - 4 WHERE k = 'schema'");
+    db.exec("UPDATE meta SET v = v - 5 WHERE k = 'schema'");
     expect(wake().node("button")!.rev).toBe(revs.get("button")! + 1);
   });
 
@@ -393,7 +393,7 @@ describe("dark-only migration", () => {
 describe("standards-mode migration", () => {
   /** Replays the migration as an existing room would see it on its next wake-up. */
   const replay = (db: DatabaseSync) => {
-    db.exec(`DELETE FROM meta WHERE k = 'standardsMode'; UPDATE meta SET v = v - 2 WHERE k = 'schema'`);
+    db.exec(`DELETE FROM meta WHERE k = 'standardsMode'; UPDATE meta SET v = v - 3 WHERE k = 'schema'`);
   };
 
   it("re-renders specimens and doctype-less documents that were measured in quirks mode", async () => {
@@ -414,7 +414,7 @@ describe("standards-mode migration", () => {
     }
     for (const id of ["fragment", "standards"]) expect(migrated.node(id)!.rev).toBe(revs.get(id));
     // Runs once: a later replay of the recorded schema leaves the room alone.
-    db.exec("UPDATE meta SET v = v - 2 WHERE k = 'schema'");
+    db.exec("UPDATE meta SET v = v - 3 WHERE k = 'schema'");
     expect(wake().node("button")!.rev).toBe(revs.get("button")! + 1);
   });
 });
@@ -430,7 +430,7 @@ describe("backfill", () => {
       await apply([{ t: "page.put", page: { id: "other", name: "Other", sort: 2 } }]);
       await apply([{ t: "node.put", id: "two", node: { pageId: "other", width: 400, height: 600, source: "<p>two</p>" } }]);
       stopViewing();
-      db.exec(`UPDATE meta SET v = '${FRAXNET}' WHERE k = 'fileId'; UPDATE meta SET v = v - 3 WHERE k = 'schema'`);
+      db.exec(`UPDATE meta SET v = '${FRAXNET}' WHERE k = 'fileId'; UPDATE meta SET v = v - 4 WHERE k = 'schema'`);
       const migrated = wake(); await flush();
       expect(db.prepare("SELECT v FROM meta WHERE k = 'backfill'").get()).toEqual({ v: "1" });
       renderer.loadFrame.mockClear();
@@ -452,7 +452,7 @@ describe("backfill", () => {
       const { db, wake, create, flush } = fixture(true);
       await create("one");
       // The original backfill already finished before the standards-mode migration queued its re-renders.
-      db.exec(`UPDATE meta SET v = '${FRAXNET}' WHERE k = 'fileId'; INSERT OR REPLACE INTO meta (k, v) VALUES ('backfill', ''); UPDATE meta SET v = v - 1 WHERE k = 'schema'`);
+      db.exec(`UPDATE meta SET v = '${FRAXNET}' WHERE k = 'fileId'; INSERT OR REPLACE INTO meta (k, v) VALUES ('backfill', ''); UPDATE meta SET v = v - 2 WHERE k = 'schema'`);
       wake(); await flush();
       expect(db.prepare("SELECT v FROM meta WHERE k = 'backfill'").get()).toEqual({ v: "1" });
     } finally { vi.useRealTimers(); }
@@ -461,7 +461,7 @@ describe("backfill", () => {
   it("does not mark other files", async () => {
     const { db, wake, create, flush } = fixture(true);
     await create("one");
-    db.exec("UPDATE meta SET v = v - 3 WHERE k = 'schema'");
+    db.exec("UPDATE meta SET v = v - 4 WHERE k = 'schema'");
     wake(); await flush();
     expect(db.prepare("SELECT v FROM meta WHERE k = 'backfill'").get()).toBeUndefined();
   });

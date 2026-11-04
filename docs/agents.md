@@ -84,9 +84,9 @@ claude mcp add --transport http sharpner https://<your-domain>/mcp --header "Aut
 | `find_instances` | Frames and components using a component, here and in files using this one as a library |
 | `create_page` / `update_page` / `delete_page` | Organize and describe pages; `kind: "design-system"` marks the file’s single Design System canvas page. Changing kind preserves nodes; deletion removes them |
 | `create_section` | Create an auto-fitting, described section, optionally nested |
-| `create_nodes` | Create up to 20 frames, components, token sheets, or images; omitted coordinates auto-place nodes |
+| `create_nodes` | Create up to 20 frames, components, token sheets, or images at the end of a section or page |
 | `read_nodes` | Read up to 20 nodes with their HTML or CSS sources |
-| `update_nodes` | Update up to 50 nodes or sections, including geometry, source, page, and grouping; a loose node moved to another page without x/y lands right of its content |
+| `update_nodes` | Update up to 50 nodes or sections: size, source, order, page, and grouping |
 | `edit_node_source` | Ordered find/replace edits, with unique matches unless `all` is set |
 | `delete_nodes` | Delete nodes; deleting a section also deletes its contents |
 | `upload_image` | Upload from a URL or base64 and return a permanent URL |
@@ -137,7 +137,7 @@ explicitly. The screen guide includes cover composition guidance.
 
 Members cannot change the cover in the browser; they ask an agent to call `set_cover`.
 
-Create screens inside sections without coordinates to use automatic layout.
+Create screens inside sections. Sharpner places every node from its order, size and grouping.
 Read sources before editing, then inspect screenshots to check the result.
 See the [design-system reference](../worker/skills/sharpner/references/design-system.md) and
 [screen reference](../worker/skills/sharpner/references/screens.md) for examples.

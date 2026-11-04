@@ -9,17 +9,20 @@ export const SECTION_PAD = 128;
 export const AUTO_GAP = 80;
 /** Space between rows. Each node's label sits in the gap above it, so rows sit further apart than columns. */
 export const AUTO_ROW_GAP = 120;
+/** Space between neighbours, rows and tiled sections at the top of a page. */
 export const SECTION_GAP = 160;
 /** Four desktop screens fit in a row. Flows of smaller screens keep reading left to right until the width runs out. */
 export const AUTO_ROW_WIDTH = 6400;
 /** Other automatic sections (images, token sheets, mixed previews) stop at four per row. */
 export const AUTO_COLUMNS = 4;
-/** Sibling sections tile in about √n columns, so a page grows roughly as wide as it is tall. */
+/** Sibling sections without screens tile in about √n columns, so a group grows roughly as wide as it is tall. */
 export const sectionColumns = (count: number) => Math.max(1, Math.ceil(Math.sqrt(count)));
-/** About four component catalogs side by side. Flows never tile, so only catalogs and groups of them meet this. */
+/** About four component catalogs side by side. Runs of sections without screens stay within this width. */
 export const TILE_WIDTH = 8000;
 /** Tiled sections may run a quarter past their widest member, so a narrow sheet can sit beside a full-width group. */
 export const tileWidth = (widths: number[]) => Math.max(TILE_WIDTH, ...widths.map((w) => w * 1.25));
+/** Width over height that a run of sibling flows aims for: a landscape block, like the screen viewing it. */
+export const FLOW_TILE_ASPECT = 1.6;
 
 /**
  * Offsets for a run of sibling sections. They fill about √n columns in order, top to bottom, each column a fixed
@@ -30,22 +33,52 @@ export const tileWidth = (widths: number[]) => Math.max(TILE_WIDTH, ...widths.ma
 export function tileSections(sizes: readonly { w: number; h: number }[], gap: number, rowGap = gap) {
   const n = sizes.length, budget = tileWidth(sizes.map((s) => s.w));
   for (let columns = Math.min(n, sectionColumns(n)); ; columns--) {
-    const offsets: { x: number; y: number }[] = [];
-    let x = 0, h = 0, start = 0;
-    for (let c = 0; c < columns; c++) {
-      // Earlier columns take the remainder, so ten sections in four columns stack 3, 3, 2, 2.
-      const column = sizes.slice(start, start += Math.floor(n / columns) + (c < n % columns ? 1 : 0));
-      let y = 0;
-      for (const s of column) { offsets.push({ x, y }); y += s.h + rowGap; }
-      h = Math.max(h, y - rowGap);
-      x += Math.max(...column.map((s) => s.w)) + gap;
-    }
-    if (x - gap <= budget || columns === 1) return { offsets, w: x - gap, h };
+    const starts: number[] = [];
+    // Earlier columns take the remainder, so ten sections in four columns stack 3, 3, 2, 2.
+    for (let c = 0, start = 0; c < columns; c++) { starts.push(start); start += Math.floor(n / columns) + (c < n % columns ? 1 : 0); }
+    const block = tileColumns(sizes, starts, gap, rowGap);
+    if (block.w <= budget || columns === 1) return block;
   }
 }
 
 /**
- * A component-only automatic section is a catalog: specimens pack tightly, each component family
+ * Offsets for a run of sibling sections that holds screens. Flows keep their order, top to bottom and then left to
+ * right, in columns whose heights balance. The run takes the column count that brings it closest to
+ * FLOW_TILE_ASPECT, so a few wide flows stay one per row and many narrow ones sit side by side.
+ * Pass `starts` to keep columns chosen earlier; `starts` in the result says where each column begins.
+ */
+export function tileFlows(sizes: readonly { w: number; h: number }[], gap: number, rowGap = gap, starts?: readonly number[]) {
+  if (starts && starts[0] === 0 && starts.every((start, i) => start < sizes.length && (!i || start > starts[i - 1]!))) {
+    return { ...tileColumns(sizes, starts, gap, rowGap), starts };
+  }
+  const heights = sizes.map((s) => s.h);
+  const skew = (b: { w: number; h: number }) => Math.abs(Math.log(b.w / Math.max(1, b.h) / FLOW_TILE_ASPECT));
+  let best = { ...tileColumns(sizes, [0], gap, rowGap), starts: [0] as readonly number[] };
+  // More columns make a run wider and shorter, so the search stops once a run is wider than the target.
+  for (let columns = 2; columns <= sizes.length && best.w / Math.max(1, best.h) < FLOW_TILE_ASPECT; columns++) {
+    const split = balancedStarts(heights, columns, rowGap), next = { ...tileColumns(sizes, split, gap, rowGap), starts: split };
+    if (skew(next) >= skew(best)) break;
+    best = next;
+  }
+  return best;
+}
+
+/** Stacks each run of `sizes` that begins at one of `starts` into a column, columns left to right. */
+function tileColumns(sizes: readonly { w: number; h: number }[], starts: readonly number[], gap: number, rowGap: number) {
+  const offsets: { x: number; y: number }[] = [];
+  let x = 0, h = 0;
+  starts.forEach((start, c) => {
+    const column = sizes.slice(start, starts[c + 1] ?? sizes.length);
+    let y = 0;
+    for (const s of column) { offsets.push({ x, y }); y += s.h + rowGap; }
+    h = Math.max(h, y - rowGap);
+    x += Math.max(...column.map((s) => s.w)) + gap;
+  });
+  return { offsets, w: x - gap, h };
+}
+
+/**
+ * A component-only section is a catalog: specimens pack tightly, each component family
  * ("Chip" in "Chip/Active") starts its own row, and the family name sits once in a left gutter.
  */
 export const CATALOG_PAD = 64;
@@ -64,11 +97,22 @@ export const layoutHeight = (f: CanvasNode, live?: Map<string, number>) =>
   f.height ?? live?.get(f.id) ?? f.measuredHeight ?? Math.round(f.width * 0.625);
 
 /**
- * Canvas rectangles for a page's nodes. Sections wrap their children (recursively) with padding;
- * an empty section sits at its own x/y. `floating` nodes (being dragged out) don't stretch their parent.
+ * Canvas rectangles for a page's nodes. Every position comes from order and size: a section arranges its children
+ * inside its padding, and the page arranges its top-level nodes from the origin the same way. Stored x/y are ignored.
+ * Flows pick their columns from stored heights, so heights a live view reports move a flow down its column but never
+ * into another one, and every viewer and agent sees the same columns.
  */
-export function layoutRects(frames: CanvasNode[], heightOf: (f: CanvasNode) => number, floating?: Set<string>) {
+export function layoutRects(frames: CanvasNode[], heightOf: (f: CanvasNode) => number) {
+  const flowColumns = new Map<string, readonly number[]>();
+  const stored = arrangePage(frames, (f) => layoutHeight(f), flowColumns);
+  if (frames.every((f) => f.kind === "section" || heightOf(f) === layoutHeight(f))) return stored;
+  return arrangePage(frames, heightOf, flowColumns);
+}
+
+/** Rects for `frames`. Flow runs use the columns in `flowColumns`, keyed by their first section, or record new ones there. */
+function arrangePage(frames: CanvasNode[], heightOf: (f: CanvasNode) => number, flowColumns: Map<string, readonly number[]>) {
   const kids = childrenOf(frames);
+  const ids = new Set(frames.map((f) => f.id));
   const rects = new Map<string, Rect>();
   const ordered = inOrder(frames);
   const shift = (f: CanvasNode, dx: number, dy: number, seen = new Set<string>()) => {
@@ -76,10 +120,10 @@ export function layoutRects(frames: CanvasNode[], heightOf: (f: CanvasNode) => n
     seen.add(f.id);
     const r = rects.get(f.id);
     if (r) rects.set(f.id, { ...r, x: r.x + dx, y: r.y + dy });
-    for (const k of kids.get(f.id) ?? []) if (!(floating?.has(k.id) && !floating.has(f.id))) shift(k, dx, dy, seen);
+    for (const k of kids.get(f.id) ?? []) shift(k, dx, dy, seen);
   };
-  // A section with screens, at any depth, is a flow that reads left to right, so it takes a whole row.
-  // Other sections (catalogs, token sheets, groups of them) tile together.
+  // A section with screens, at any depth, is a flow that reads left to right. Runs that hold flows tile toward a
+  // landscape block; runs of other sections (catalogs, token sheets, groups of them) tile in about √n columns.
   const screens = new Map<string, boolean>();
   const hasScreens = (s: CanvasNode): boolean => {
     if (!screens.has(s.id)) {
@@ -88,107 +132,81 @@ export function layoutRects(frames: CanvasNode[], heightOf: (f: CanvasNode) => n
     }
     return screens.get(s.id)!;
   };
-  /** Consecutive siblings that tile together: one flow alone, or a run of other sections. */
-  const runEnd = (sections: CanvasNode[], start: number) => {
-    let end = start + 1;
-    if (!hasScreens(sections[start]!)) while (end < sections.length && sections[end]!.kind === "section" && !hasScreens(sections[end]!)) end++;
-    return end;
+  /**
+   * Offsets for a group's contents in order. Nodes sit in rows: screens wrap only when the row width runs out,
+   * other nodes after four. Consecutive sections tile as one block on rows of their own.
+   */
+  const arrange = (children: CanvasNode[], inner: Rect[], gap: number, rowGap: number) => {
+    const flow = children.some((k) => k.kind === "frame");
+    const offsets: { x: number; y: number }[] = [];
+    let x = 0, y = 0, rowHeight = 0, columns = 0, width = 0;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i]!, cr = inner[i]!;
+      if (child.kind === "section") {
+        let end = i + 1;
+        while (end < children.length && children[end]!.kind === "section") end++;
+        const run = children.slice(i, end), sizes = inner.slice(i, end);
+        let block: { offsets: { x: number; y: number }[]; w: number; h: number };
+        if (run.some(hasScreens)) {
+          const tiled = tileFlows(sizes, gap, rowGap, flowColumns.get(child.id));
+          flowColumns.set(child.id, tiled.starts);
+          block = tiled;
+        } else block = tileSections(sizes, gap, rowGap);
+        if (columns) { y += rowHeight + rowGap; x = 0; }
+        for (const o of block.offsets) offsets.push({ x: o.x, y: y + o.y });
+        width = Math.max(width, block.w); rowHeight = block.h; columns = 1;
+        i = end - 1;
+        continue;
+      }
+      const wraps = children[i - 1]?.kind === "section" || !flow && columns >= AUTO_COLUMNS || x + cr.w > AUTO_ROW_WIDTH;
+      if (columns && wraps) {
+        y += rowHeight + rowGap; x = 0; rowHeight = 0; columns = 0;
+      }
+      offsets.push({ x, y });
+      width = Math.max(width, x + cr.w);
+      rowHeight = Math.max(rowHeight, cr.h);
+      x += cr.w + gap; columns++;
+    }
+    return { offsets, w: width, h: y + rowHeight };
   };
+  /** Moves each child so its rect starts at its offset from `origin`. */
+  const place = (children: CanvasNode[], inner: Rect[], offsets: { x: number; y: number }[], origin: number) =>
+    children.forEach((child, i) => shift(child, origin + offsets[i]!.x - inner[i]!.x, origin + offsets[i]!.y - inner[i]!.y));
   const rectOf = (f: CanvasNode, seen = new Set<string>()): Rect => {
     const cached = rects.get(f.id);
     if (cached) return cached;
     let r: Rect;
     if (f.kind !== "section") {
-      r = { x: f.x, y: f.y, w: f.width, h: heightOf(f) };
+      r = { x: 0, y: 0, w: f.width, h: heightOf(f) };
     } else {
       seen.add(f.id);
-      const children = ordered((kids.get(f.id) ?? [])
-        .filter((k) => !seen.has(k.id) && !(f.layout !== "auto" && floating?.has(k.id) && !floating.has(f.id))));
+      const children = ordered((kids.get(f.id) ?? []).filter((k) => !seen.has(k.id)));
       const inner = children.map((k) => rectOf(k, new Set(seen)));
-      if (f.layout === "auto" && inner.length && isCatalog(children)) {
+      if (!inner.length) {
+        r = { x: 0, y: 0, ...EMPTY_SECTION };
+      } else if (isCatalog(children)) {
         const gutter = children.some((k) => familyOf(k.name)) ? CATALOG_GUTTER : 0;
         const block = catalogLayout(children.map((k) => k.name), inner, gutter);
-        children.forEach((child, i) => {
-          const cr = inner[i]!, o = block.offsets[i]!;
-          if (!(floating?.has(child.id) && !floating.has(f.id))) shift(child, f.x + CATALOG_PAD + o.x - cr.x, f.y + CATALOG_PAD + o.y - cr.y);
-        });
-        r = { x: f.x, y: f.y, w: block.w + CATALOG_PAD * 2, h: block.h + CATALOG_PAD * 2 };
-      } else if (f.layout === "auto" && inner.length) {
-        const pad = SECTION_PAD, gap = AUTO_GAP, rowGap = AUTO_ROW_GAP;
-        // Screens directly in a section make it a flow, which wraps only when it runs out of width.
-        const flow = children.some((k) => k.kind === "frame");
-        // Keep the original slot while a child floats. This prevents the drop target collapsing
-        // under the pointer and the rest of the canvas jumping before the drop is committed.
-        const place = (i: number, dx: number, dy: number) => {
-          const child = children[i]!, cr = inner[i]!;
-          if (!(floating?.has(child.id) && !floating.has(f.id))) shift(child, f.x + pad + dx - cr.x, f.y + pad + dy - cr.y);
-        };
-        let x = 0, y = 0, rowHeight = 0, columns = 0, width = 0;
-        for (let i = 0; i < children.length; i++) {
-          const child = children[i]!, cr = inner[i]!;
-          if (child.kind === "section") {
-            // Nested groups start a new row as one tiled block; the next frame starts another.
-            const end = runEnd(children, i), block = tileSections(inner.slice(i, end), gap, rowGap);
-            if (columns) { y += rowHeight + rowGap; x = 0; }
-            block.offsets.forEach((o, j) => place(i + j, o.x, y + o.y));
-            width = Math.max(width, block.w); rowHeight = block.h; columns = 1;
-            i = end - 1;
-            continue;
-          }
-          const wraps = children[i - 1]?.kind === "section" || !flow && columns >= AUTO_COLUMNS || x + cr.w > AUTO_ROW_WIDTH;
-          if (columns && wraps) {
-            y += rowHeight + rowGap; x = 0; rowHeight = 0; columns = 0;
-          }
-          place(i, x, y);
-          width = Math.max(width, x + cr.w);
-          rowHeight = Math.max(rowHeight, cr.h);
-          x += cr.w + gap; columns++;
-        }
-        r = { x: f.x, y: f.y, w: width + pad * 2, h: y + rowHeight + pad * 2 };
+        place(children, inner, block.offsets, CATALOG_PAD);
+        r = { x: 0, y: 0, w: block.w + CATALOG_PAD * 2, h: block.h + CATALOG_PAD * 2 };
       } else {
-        r = inner.length ? pad(union(inner), SECTION_PAD) : { x: f.x, y: f.y, ...EMPTY_SECTION };
+        const block = arrange(children, inner, AUTO_GAP, AUTO_ROW_GAP);
+        place(children, inner, block.offsets, SECTION_PAD);
+        r = { x: 0, y: 0, w: block.w + SECTION_PAD * 2, h: block.h + SECTION_PAD * 2 };
       }
     }
     rects.set(f.id, r);
     return r;
   };
   for (const f of frames) rectOf(f);
-  // Only explicitly automatic root sections participate. Existing free layouts and loose nodes stay put, and a
-  // page that has any keeps its automatic sections in one column, so tiling never grows sideways into them.
-  const pages = new Map<string, CanvasNode[]>(), manual = new Set<string>();
-  for (const f of frames) {
-    if (isManualRoot(f)) manual.add(f.pageId);
-    else if (!f.parentId) (pages.get(f.pageId) ?? pages.set(f.pageId, []).get(f.pageId)!).push(f);
-  }
-  for (const [pageId, roots] of pages) {
-    const anchors = roots.filter((f) => !floating?.has(f.id));
-    const base = anchors.length ? anchors : roots;
-    const sorted = ordered(roots), left = Math.min(...base.map((f) => f.x)), top = Math.min(...base.map((f) => f.y));
-    for (let i = 0, y = 0; i < sorted.length;) {
-      const run = sorted.slice(i, i = manual.has(pageId) ? i + 1 : runEnd(sorted, i));
-      const block = tileSections(run.map((root) => rects.get(root.id)!), SECTION_GAP);
-      run.forEach((root, j) => {
-        const r = rects.get(root.id)!, at = block.offsets[j]!;
-        if (!floating?.has(root.id)) shift(root, left + at.x - r.x, top + y + at.y - r.y);
-      });
-      y += block.h + SECTION_GAP;
-    }
+  // Each page arranges its top-level nodes, and any whose section is missing, like a section without padding.
+  const pages = new Map<string, CanvasNode[]>();
+  for (const f of frames) if (!f.parentId || !ids.has(f.parentId)) (pages.get(f.pageId) ?? pages.set(f.pageId, []).get(f.pageId)!).push(f);
+  for (const roots of pages.values()) {
+    const sorted = ordered(roots), inner = sorted.map((root) => rects.get(root.id)!);
+    place(sorted, inner, arrange(sorted, inner, SECTION_GAP, SECTION_GAP).offsets, 0);
   }
   return rects;
-}
-
-/** Top-level content placed by hand: a free section or a loose node. Its page keeps automatic sections in one column. */
-export const isManualRoot = (f: CanvasNode) => !f.parentId && !(f.kind === "section" && f.layout === "auto");
-
-/**
- * How one page arranges its automatic top-level sections: tiled, stacked in one column because hand-placed
- * content shares the page (`stackedBy`), or manual when nothing on it is automatic.
- */
-export function pageArrangement(pageNodes: readonly CanvasNode[]) {
-  const automatic = pageNodes.some((f) => !f.parentId && !isManualRoot(f)), stackedBy = pageNodes.filter(isManualRoot);
-  if (!stackedBy.length) return { arrangement: "tiled" as const };
-  if (!automatic) return { arrangement: "manual" as const };
-  return { arrangement: "stacked" as const, stackedBy };
 }
 
 /** Sorts nodes by `order`, falling back to their position in `frames`, then id. */
@@ -271,11 +289,11 @@ const isCatalog = (children: CanvasNode[]) => children.length > 0 && children.ev
 /** "Chip" for "Chip/Active"; empty for a name without a family. Matches the specimens' componentName. */
 export const familyOf = (name: string) => name.includes("/") ? componentName(name).family : "";
 
-/** Automatic sections laid out as a catalog. */
+/** Sections laid out as a catalog. */
 export function catalogSectionIds(frames: CanvasNode[]) {
   const ids = new Set<string>();
-  const sections = new Map(frames.map((f) => [f.id, f]));
-  for (const [id, children] of childrenOf(frames)) if (sections.get(id)?.layout === "auto" && isCatalog(children)) ids.add(id);
+  const sections = new Set(frames.filter((f) => f.kind === "section").map((f) => f.id));
+  for (const [id, children] of childrenOf(frames)) if (sections.has(id) && isCatalog(children)) ids.add(id);
   return ids;
 }
 
@@ -294,91 +312,15 @@ export function catalogFamilyLabels(frames: CanvasNode[], rects: ReadonlyMap<str
   return labels;
 }
 
-/** Nodes whose location is derived from their order rather than their stored x/y. */
-export function isManaged(f: CanvasNode, nodes: ReadonlyMap<string, CanvasNode>) {
-  if (!f.parentId && f.kind === "section" && f.layout === "auto") return true;
-  const seen = new Set<string>();
-  let parentId = f.parentId;
-  while (parentId && !seen.has(parentId)) {
-    seen.add(parentId);
-    const parent = nodes.get(parentId);
-    if (parent?.layout === "auto") return true;
-    parentId = parent?.parentId ?? null;
-  }
-  return false;
-}
-
-/** Stable fractional orders for a drop in an automatic group, preserving the dragged block's order. */
-export function dropOrders(frames: CanvasNode[], rects: Map<string, Rect>, ids: string[], parentId: string | null, pageId: string, point: { x: number; y: number }) {
-  const movingIds = new Set(ids);
-  const orderById = new Map(frames.map((node, index) => [node.id, node.order ?? index]));
-  const siblings = frames.filter((node) => !movingIds.has(node.id) && node.pageId === pageId && node.parentId === parentId &&
-    (parentId !== null || node.kind === "section" && node.layout === "auto"))
-    .sort((a, b) => orderById.get(a.id)! - orderById.get(b.id)! || a.id.localeCompare(b.id));
-  const insertionIndex = dropIndex(siblings, rects, point);
-
-  const before = insertionIndex > 0 ? orderById.get(siblings[insertionIndex - 1]!.id)! : undefined;
-  const after = insertionIndex < siblings.length ? orderById.get(siblings[insertionIndex]!.id)! : undefined;
-  const low = before ?? (after !== undefined ? after - 1 : -1);
-  const high = after ?? low + 1;
-  const block = [...ids].sort((a, b) => (orderById.get(a) ?? 0) - (orderById.get(b) ?? 0));
-  const placed = new Map(block.map((id, index) => [id, low + (high - low) * (index + 1) / (ids.length + 1)]));
-  const values = [...placed.values()];
-
-  // Repeated insertion into one gap eventually exhausts floating-point precision. Rebalance only
-  // that group in the same atomic drop, so ordering stays reliable without rewriting it each time.
-  const needsRebalance = values.some((value) => !Number.isFinite(value) || value <= low || value >= high) ||
-    new Set(values).size !== values.length;
-  if (needsRebalance) {
-    const sequence = [
-      ...siblings.slice(0, insertionIndex).map((node) => node.id),
-      ...block,
-      ...siblings.slice(insertionIndex).map((node) => node.id),
-    ];
-    return new Map(sequence.map((id, index) => [id, (index + 1) * 1024]));
-  }
-  return placed;
-}
-
-/**
- * Finds a pointer's insertion slot beside the nearest sibling: frames in rows split at horizontal midpoints,
- * sections (stacked in tiled columns or alone in a row) at vertical ones.
- */
-function dropIndex(siblings: CanvasNode[], rects: ReadonlyMap<string, Rect>, point: { x: number; y: number }) {
-  let nearest = -1, best = Infinity;
-  siblings.forEach((node, index) => {
-    const r = rects.get(node.id)!;
-    const dx = Math.max(r.x - point.x, 0, point.x - r.x - r.w), dy = Math.max(r.y - point.y, 0, point.y - r.y - r.h);
-    if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; nearest = index; }
-  });
-  if (nearest < 0) return siblings.length;
-  const node = siblings[nearest]!, r = rects.get(node.id)!;
-  const before = node.kind === "section" ? point.y < r.y + r.h / 2 : point.x < r.x + r.w / 2;
-  return before ? nearest : nearest + 1;
-}
-
 export function childrenOf(frames: CanvasNode[]) {
   const kids = new Map<string, CanvasNode[]>();
   for (const f of frames) if (f.parentId) (kids.get(f.parentId) ?? kids.set(f.parentId, []).get(f.parentId)!).push(f);
   return kids;
 }
 
-/** All nodes nested (at any depth) inside the given sections. */
-export function descendantsOf(frames: CanvasNode[], ids: Iterable<string>) {
-  const kids = childrenOf(frames);
-  const out = new Set<string>();
-  const stack = [...ids];
-  while (stack.length) {
-    for (const k of kids.get(stack.pop()!) ?? []) if (!out.has(k.id)) { out.add(k.id); stack.push(k.id); }
-  }
-  return out;
-}
-
 export function union(rects: Rect[]): Rect {
   const x = Math.min(...rects.map((r) => r.x)), y = Math.min(...rects.map((r) => r.y));
   return { x, y, w: Math.max(...rects.map((r) => r.x + r.w)) - x, h: Math.max(...rects.map((r) => r.y + r.h)) - y };
 }
-
-const pad = (r: Rect, p: number): Rect => ({ x: r.x - p, y: r.y - p, w: r.w + p * 2, h: r.h + p * 2 });
 
 export const contains = (r: Rect, x: number, y: number) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;

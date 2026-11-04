@@ -42,6 +42,7 @@ const THUMB_DELAY = THUMBNAIL_POLICY.debounceMs;
 const THUMB_BATCH = THUMBNAIL_POLICY.batch;
 const THUMB_TABS = THUMBNAIL_POLICY.tabs;
 const THUMB_MAX_TRIES = THUMBNAIL_POLICY.maxTries;
+// `layout` is 'auto' on every section. It stays in node metadata for tabs loaded before that, which read it.
 const META_COLS = `nodes.id AS id, page_id AS pageId, parent_id AS parentId, kind, name, x, y, layout, d.text AS description, sort AS 'order', width, height, measured_h AS measuredHeight,
   src, thumb_lo AS thumbLo, thumb_hi AS thumbHi, rev, thumb_rev AS thumbRev, thumb_theme AS thumbTheme,
   (SELECT json_group_object(t.theme, json_object('rev', t.rev, 'lo', t.thumb_lo, 'hi', t.thumb_hi, 'measuredHeight', t.measured_h))
@@ -185,6 +186,14 @@ const MIGRATIONS = [
   (sql: SqlStorage) => {
     const fileId = sql.exec<{ v: string }>(`SELECT v FROM meta WHERE k = 'fileId'`).toArray()[0]?.v;
     if (backfilling(fileId)) sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('backfill', '1')`);
+  },
+  // Every section is automatic: order and size place each node, so sections can't be positioned over one another.
+  // Free sections keep their stored positions, and `freeSections` lists them so they can be restored by hand.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'freeSections'`).toArray().length) return;
+    const free = sql.exec<{ id: string }>(`SELECT id FROM nodes WHERE kind = 'section' AND layout != 'auto'`).toArray().map((r) => r.id);
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('freeSections', ?)`, JSON.stringify(free));
+    sql.exec(`UPDATE nodes SET layout = 'auto' WHERE kind = 'section'`);
   },
 ];
 
@@ -513,40 +522,30 @@ export class FileRoom extends DurableObject<Env> {
 
   /**
    * Upserts a node. Returns true when what it renders changed (needs a new thumbnail).
-   * Moving a section moves everything inside it; nodes that moved along are added to `touched`.
+   * Moving a section to another page moves everything inside it; nodes that moved along are added to `touched`.
    * Design system edits are recorded in `design` so dependent nodes (and files) re-render.
    */
   private putNode(id: string, input: NodeInput, touched: Set<string>, design: { tags: Set<string>; tokens: boolean }): boolean {
-    let cur = this.node(id);
-    // A partial put for a node that is gone, such as a drag move that lands after another member's
+    const cur = this.node(id);
+    // A partial put for a node that is gone, such as an update that lands after another agent's
     // delete, must not recreate it as a blank frame. Creations always name their page.
     if (!cur && input.pageId === undefined) return false;
     const pageId = input.pageId ?? cur?.pageId ?? this.pages()[0]!.id;
     if (!this.pages().some((p) => p.id === pageId)) throw new Error(`Unknown page ${pageId}`);
     const kind = cur?.kind ?? (KINDS.includes(input.kind!) ? input.kind! : "frame");
-    if (input.layout !== undefined && (kind !== "section" || !["auto", "free"].includes(input.layout))) throw new Error("Layout must be auto or free on a section");
     if (input.order !== undefined && !Number.isFinite(input.order)) throw new Error("Order must be a finite number");
     if (input.description && kind !== "section") throw new Error("Only sections and pages have descriptions");
-    // When a node leaves a managed group, its stored placeholder coordinates must become its actual
-    // visible position. The same applies when changing a section's layout mode.
-    if (cur) {
-      const changesParent = input.parentId !== undefined && input.parentId !== cur.parentId;
-      const changesPage = input.pageId !== undefined && input.pageId !== cur.pageId;
-      const changesLayout = cur.kind === "section" && input.layout !== undefined && input.layout !== cur.layout;
-      if (changesParent || changesPage || changesLayout) {
-        this.preserveLayoutPositions(cur, touched);
-        cur = this.node(id)!;
-      }
-    }
     // Moving to another page leaves the section unless a new one is given.
     const parentId = input.parentId !== undefined ? input.parentId : pageId !== cur?.pageId ? null : cur?.parentId ?? null;
     if (parentId) this.checkParent(id, parentId, pageId);
 
     const next = {
       name: str(input.name ?? cur?.name).slice(0, 200) || DEFAULT_NAME[kind],
-      x: num(input.x ?? cur?.x),
-      y: num(input.y ?? cur?.y),
-      layout: kind === "section" ? input.layout ?? cur?.layout ?? "auto" : "free",
+      // Order and size place every node. Old positions stay stored, unused, so a rollback finds them.
+      x: num(cur?.x),
+      y: num(cur?.y),
+      // Sections are automatic; an older deployment reads this column to decide.
+      layout: kind === "section" ? "auto" : "free",
       order: input.order ?? cur?.order ?? (this.sql.exec<{ n: number }>(`SELECT coalesce(max(sort), 0) + 1 AS n FROM nodes`).toArray()[0]!.n),
       width: kind === "section" ? 0 : Math.max(1, num(input.width ?? cur?.width ?? DEFAULT_WIDTH[kind] ?? 400)),
       height: kind === "section" ? null : input.height === null ? null : input.height !== undefined ? Math.max(1, num(input.height)) : cur?.height ?? null,
@@ -563,13 +562,10 @@ export class FileRoom extends DurableObject<Env> {
       if (clash) throw new Error(`Component "${clash.name}" already uses the tag <${tag}>; pick another name`);
     }
 
-    if (kind === "section" && cur) {
-      const dx = next.x - cur.x, dy = next.y - cur.y;
-      if (dx || dy || pageId !== cur.pageId) {
-        for (const d of this.descendants(id)) {
-          this.sql.exec(`UPDATE nodes SET x = x + ?, y = y + ?, page_id = ? WHERE id = ?`, dx, dy, pageId, d);
-          touched.add(d);
-        }
+    if (kind === "section" && cur && pageId !== cur.pageId) {
+      for (const d of this.descendants(id)) {
+        this.sql.exec(`UPDATE nodes SET page_id = ? WHERE id = ?`, pageId, d);
+        touched.add(d);
       }
     }
 
@@ -597,25 +593,6 @@ export class FileRoom extends DurableObject<Env> {
     if (cur?.thumbTheme !== undefined) this.sql.exec(`UPDATE nodes SET thumb_theme = ? WHERE id = ?`, cur.thumbTheme, id);
     if (kind === "section" && input.description !== undefined) this.describe(str(id), input.description);
     return changed && (isRendered(kind) || kind === "image" && !thumbLo);
-  }
-
-  /** Materializes computed positions before a node changes its page, parent or layout mode. */
-  private preserveLayoutPositions(current: CanvasNode, touched: Set<string>) {
-    const pageNodes = this.nodes().filter((node) => node.pageId === current.pageId);
-    const rects = layoutRects(pageNodes, layoutHeight);
-    const preservedIds = new Set([current.id, ...this.descendants(current.id)]);
-
-    // If a root leaves the stack, the remaining stack keeps its current origin.
-    if (!current.parentId && current.layout === "auto") {
-      for (const node of pageNodes) {
-        if (!node.parentId && node.kind === "section" && node.layout === "auto") preservedIds.add(node.id);
-      }
-    }
-    for (const id of preservedIds) {
-      const rect = rects.get(id)!;
-      this.sql.exec(`UPDATE nodes SET x = ?, y = ? WHERE id = ?`, rect.x, rect.y, id);
-      touched.add(id);
-    }
   }
 
   private checkParent(id: string, parentId: string, pageId: string) {

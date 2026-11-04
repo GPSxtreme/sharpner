@@ -44,7 +44,7 @@ describe("Design System page persistence", () => {
     await apply([
       { t: "node.put", id: "base", node: { pageId: page.id, kind: "tokens", name: "Base", source: "@theme { --color-primary: blue; }" } },
       { t: "node.put", id: "override", node: { pageId: page.id, kind: "tokens", name: "Override", source: "@theme { --color-primary: purple; }" } },
-      { t: "node.put", id: "foundations", node: { pageId: page.id, kind: "section", name: "02 · Foundations", layout: "auto" } },
+      { t: "node.put", id: "foundations", node: { pageId: page.id, kind: "section", name: "02 · Foundations" } },
     ]);
     await apply([{ t: "node.put", id: "base", node: { parentId: "foundations", order: 20 } }]);
     expect(foundations(room.ownDesignSystem().tokens).vars.light!["--color-primary"]).toBe("purple");

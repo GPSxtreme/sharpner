@@ -36,9 +36,9 @@ function fixture(options: ConstructorParameters<typeof ThumbnailCache>[1] = {}) 
       return image as unknown as HTMLImageElement;
     },
   });
-  const paint = (zoom: number, nodes = [component], upgrades = { enabled: false, settled: true }) => {
+  const paint = (zoom: number, nodes = [component], upgrades = { enabled: false, settled: true }, rects = layoutRects(nodes, layoutHeight)) => {
     const camera = { x: 0, y: 0, z: zoom }, size = { w: 1000, h: 800 };
-    const plan = planCanvasRendering(nodes, layoutRects(nodes, layoutHeight), {
+    const plan = planCanvasRendering(nodes, rects, {
       camera, size, pixelRatio: 2, ready: true, settled: true,
       previous: { liveIds: new Set(), imageIds: new Set() },
     });
@@ -55,6 +55,9 @@ function fixture(options: ConstructorParameters<typeof ThumbnailCache>[1] = {}) 
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** Rects at each node's own x/y, for tests that need nodes at chosen places on screen rather than in page layout. */
+const placed = (nodes: CanvasNode[]) => new Map(nodes.map((n) => [n.id, { x: n.x, y: n.y, w: n.width, h: layoutHeight(n) }]));
+
 describe("raster previews while zoomed out", () => {
   it("admits a stable sharper working set using the renderer's actual maximum image size", () => {
     const f = fixture();
@@ -63,10 +66,10 @@ describe("raster previews while zoomed out", () => {
       x: (i % 8) * 420, y: Math.floor(i / 8) * 850,
       thumbLo: `/small-${i}.webp`, thumbHi: `/sharp-${i}.webp`,
     }));
-    const upgrades = { enabled: true, settled: true };
-    f.paint(0.2, nodes, upgrades);
+    const upgrades = { enabled: true, settled: true }, rects = placed(nodes);
+    f.paint(0.2, nodes, upgrades, rects);
     f.finish(); f.finish();
-    f.paint(0.2, nodes, upgrades);
+    f.paint(0.2, nodes, upgrades, rects);
     // These previews are 400x800, not upscaled 1280px captures. All 32 fit the existing budget.
     expect(f.highCache.stats.admitted).toBe(32);
     expect(f.highCache.stats.loading).toBe(2);
@@ -169,11 +172,11 @@ describe("raster previews while zoomed out", () => {
     }));
     nodes.push({ ...component, id: "nearby", x: 2200, thumbLo: "/offscreen-lo.webp", thumbHi: "/offscreen-hi.webp" });
     nodes.push({ ...component, id: "upload", kind: "image", src: "/original.jpg", thumbLo: "/upload-lo.webp", thumbHi: "/original.jpg" });
-    const upgrades = { enabled: true, settled: true };
-    f.paint(0.5, nodes, upgrades); f.finish(); f.paint(0.5, nodes, upgrades);
+    const upgrades = { enabled: true, settled: true }, rects = placed(nodes);
+    f.paint(0.5, nodes, upgrades, rects); f.finish(); f.paint(0.5, nodes, upgrades, rects);
     expect(f.highImages).toHaveLength(2);
     expect(f.highCache.stats.loading).toBe(2);
-    for (let i = 0; i < 4; i++) { f.finishHigh(); f.paint(0.5, nodes, upgrades); }
+    for (let i = 0; i < 4; i++) { f.finishHigh(); f.paint(0.5, nodes, upgrades, rects); }
     expect(f.highImages).toHaveLength(8);
     expect(f.highImages.every(image => image.src.startsWith("/hi-"))).toBe(true);
     expect(f.highCache.stats.loading).toBe(0);
@@ -212,7 +215,7 @@ describe("raster previews while zoomed out", () => {
 });
 
 describe("raster labels", () => {
-  const flow: CanvasNode = { ...component, id: "flow", kind: "section", name: "Checkout", layout: "auto", width: 0, height: null, thumbLo: null, thumbHi: null };
+  const flow: CanvasNode = { ...component, id: "flow", kind: "section", name: "Checkout", width: 0, height: null, thumbLo: null, thumbHi: null };
   const screens = Array.from({ length: 6 }, (_, i): CanvasNode => ({
     ...component, id: `s${i}`, kind: "frame", name: `Screen ${i}`, parentId: "flow", order: i, width: 400, height: 800, thumbLo: null, thumbHi: null,
   }));

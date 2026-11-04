@@ -61,7 +61,7 @@ describe.skipIf(import.meta.env.MODE !== "stress")("canvas layout stress", () =>
 
   it("matches fresh shared layout through 1,000 mixed edits in nested sections", () => {
     const sections = Array.from({ length: 24 }, (_, i) => frame(`section-${i}`, {
-      kind: "section", layout: i % 3 ? "auto" : "free", height: null,
+      kind: "section", height: null,
       parentId: i < 4 ? null : `section-${i % 4}`, x: (i % 4) * 3000, y: Math.floor(i / 4) * 2000,
     }));
     initialize([...sections, ...Array.from({ length: 1000 }, (_, i) => frame(`screen-${i}`, { parentId: `section-${i % 24}`, order: i, x: i % 10 * 500, y: Math.floor(i / 10) * 700 }))]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutHeight, layoutRects } from "../shared/layout";
+import { layoutHeight } from "../shared/layout";
 import type { CanvasNode } from "../shared/types";
 import { canInteract, planCanvasRendering } from "./canvas-render-plan";
 
@@ -13,8 +13,10 @@ const viewport = {
   ready: true, settled: true,
   previous: { liveIds: new Set<string>(), imageIds: new Set<string>() },
 };
+/** Plans with each node at its own x/y, so a test puts nodes at chosen places on screen rather than in page layout. */
 function plan(nodes: CanvasNode[], overrides: Partial<typeof viewport> & { interactionId?: string | null } = {}) {
-  return planCanvasRendering(nodes, layoutRects(nodes, layoutHeight), { ...viewport, ...overrides });
+  const rects = new Map(nodes.map((n) => [n.id, { x: n.x, y: n.y, w: n.width, h: layoutHeight(n) }]));
+  return planCanvasRendering(nodes, rects, { ...viewport, ...overrides });
 }
 const ids = (nodes: { node: CanvasNode }[]) => nodes.map(({ node }) => node.id);
 

@@ -11,7 +11,7 @@ Use custom HTML for layout and unique content. Extract repeated feature markup i
 - Use one page per large feature, with sections for each flow, such as Onboarding or Checkout.
 - Keep screens, states, and feature components on that page. Describe each page and section.
 - Use one frame per screen or state. Name frames by task: `Checkout · Payment` or `Checkout · Payment · Error`.
-- Put screens left to right in flow order. Keep related states together. Omit x/y in automatic sections; use `order` to change sequence.
+- Put screens left to right in flow order. Keep related states together. Use `order` to change sequence.
 - Use viewport widths of 1440 for desktop, 1280 for compact desktop, 768 for tablet, or 390 for mobile.
 - Use a fixed mobile height of 844. Omit desktop height to fit content.
 

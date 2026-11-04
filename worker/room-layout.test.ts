@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { layoutHeight, layoutRects } from "../shared/layout";
+import { layoutHeight, layoutRects, SECTION_GAP, SECTION_PAD } from "../shared/layout";
 import { DESCRIPTION_MAX, type NodeInput, type Page } from "../shared/types";
 
 vi.mock("cloudflare:workers", () => ({
@@ -54,26 +54,30 @@ function fixture(legacy = false) {
 }
 
 describe("persisted automatic layout", () => {
-  it("defaults new sections to auto and keeps creation order across edits", () => {
-    const { room, put, rects } = fixture();
+  it("stores new sections as automatic and keeps creation order across edits", () => {
+    const { db, room, put, rects } = fixture();
     put("flow", { kind: "section" });
     put("first", { parentId: "flow", source: "<p>First</p>" });
     put("second", { parentId: "flow", source: "<p>Second</p>" });
     const before = rects();
     put("first", { name: "Renamed", source: "<p>Updated</p>" });
-    expect(room.node("flow")!.layout).toBe("auto");
+    // An older deployment reads this column, so a rollback still arranges the section.
+    expect(db.prepare("SELECT layout FROM nodes WHERE id = 'flow'").get()).toEqual({ layout: "auto" });
     expect(rects()).toEqual(before);
     expect(room.nodes().map((n) => n.id)).toEqual(["flow", "first", "second"]);
     expect(room.node("first")!.order).toBeLessThan(room.node("second")!.order!);
   });
 
-  it("migrates legacy sections without changing their positions and refreshes specimen previews", () => {
+  it("migrates legacy sections to automatic layout, keeps their stored positions, and refreshes specimen previews", () => {
     const { room, rects, db } = fixture(true);
-    expect(room.node("legacy-section")!.layout).toBe("free");
-    expect(rects().get("legacy-screen")).toMatchObject({ x: 1000, y: 1200 });
+    expect(db.prepare("SELECT layout FROM nodes WHERE id = 'legacy-section'").get()).toEqual({ layout: "auto" });
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'freeSections'").get()).toEqual({ v: '["legacy-section"]' });
+    expect(room.node("legacy-screen")).toMatchObject({ x: 1000, y: 1200 });
+    expect(rects().get("legacy-section")).toMatchObject({ x: 0, y: 0 });
+    expect(rects().get("legacy-screen")).toMatchObject({ x: SECTION_PAD, y: SECTION_PAD });
     // Three specimen refreshes: the old card presentation, dark specimens, then standards-mode measurement.
     expect(room.node("component")!.rev).toBe(4);
-    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "16" });
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "17" });
   });
 
   it("refreshes cached token previews once for named themes without rerendering screens or components", () => {
@@ -96,47 +100,43 @@ describe("persisted automatic layout", () => {
     expect(wake().node("tokens")!.rev).toBe(2);
   });
 
-  it("switches automatic groups to free without shifting their descendants or the remaining stack", () => {
+  it("makes free sections automatic once, so sections placed by hand no longer overlap", () => {
+    const { db, wake, put, rects } = fixture();
+    put("dark", { kind: "section" });
+    put("dark-screen", { parentId: "dark", source: "<p>Dark</p>", width: 1440, height: 900 });
+    put("light", { kind: "section" });
+    put("light-screen", { parentId: "light", source: "<p>Light</p>", width: 1440, height: 900 });
+    // An agent placed both sections by hand, one over the other, before every section was automatic.
+    db.exec(`UPDATE nodes SET layout = 'free' WHERE kind = 'section'; UPDATE nodes SET x = 0, y = 0;
+      DELETE FROM meta WHERE k = 'freeSections'; UPDATE meta SET v = '16' WHERE k = 'schema';`);
+    const upgraded = wake();
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'freeSections'").get()).toEqual({ v: '["dark","light"]' });
+    expect(db.prepare("SELECT DISTINCT layout FROM nodes WHERE kind = 'section'").all()).toEqual([{ layout: "auto" }]);
+    const after = layoutRects(upgraded.nodes(), layoutHeight), dark = after.get("dark")!, light = after.get("light")!;
+    expect(light).toMatchObject({ x: dark.x + dark.w + SECTION_GAP, y: dark.y });
+    expect(rects()).toEqual(after);
+
+    // The list records the sections the first run changed; running again changes nothing.
+    db.exec(`UPDATE meta SET v = '16' WHERE k = 'schema';`);
+    wake();
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'freeSections'").get()).toEqual({ v: '["dark","light"]' });
+  });
+
+  it("moves a screen out of its section into the page's arrangement without storing a position", () => {
     const { room, put, rects } = fixture();
     put("flow", { kind: "section" });
-    put("nested", { kind: "section", parentId: "flow" });
-    put("screen", { parentId: "nested", source: "<p>Screen</p>" });
-    put("other", { kind: "section" });
-    put("other-screen", { parentId: "other", source: "<p>Other</p>" });
-    const before = rects();
-    put("flow", { layout: "free" });
-    const after = rects();
-    for (const id of ["flow", "nested", "screen", "other", "other-screen"]) expect(after.get(id)).toEqual(before.get(id));
-    expect(room.node("flow")!.layout).toBe("free");
-  });
-
-  it("preserves the visible geometry of a nested free group detached from automatic layout", () => {
-    const { put, rects } = fixture();
-    put("flow", { kind: "section", x: 100, y: 200 });
-    put("free", { kind: "section", parentId: "flow", layout: "free" });
-    put("screen", { parentId: "free", x: 3000, y: 5000, source: "<p>Screen</p>" });
-    const before = rects();
-    put("free", { parentId: null });
-    const after = rects();
-    expect(after.get("free")).toEqual(before.get("free"));
-    expect(after.get("screen")).toEqual(before.get("screen"));
-  });
-
-  it("keeps a reparented screen at its computed location when no new location was given", () => {
-    const { room, put, rects } = fixture();
-    put("flow", { kind: "section", x: 100, y: 200 });
     put("screen", { parentId: "flow", source: "<p>Screen</p>" });
-    const before = rects().get("screen")!;
+    const flow = rects().get("flow")!;
     put("screen", { parentId: null });
-    expect(rects().get("screen")).toEqual(before);
-    expect(room.node("screen")).toMatchObject({ parentId: null, x: before.x, y: before.y });
+    expect(room.node("screen")).toMatchObject({ parentId: null, x: 0, y: 0 });
+    expect(rects().get("screen")).toMatchObject({ x: 0, y: rects().get("flow")!.h + SECTION_GAP });
+    expect(rects().get("flow")!.h).toBeLessThan(flow.h);
   });
 
   it("rejects invalid managed metadata instead of persisting it", () => {
     const { put } = fixture();
     put("flow", { kind: "section" });
     expect(() => put("flow", { order: Infinity })).toThrow("finite");
-    expect(() => put("frame", { layout: "auto" })).toThrow("section");
   });
 });
 

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_GAP, AUTO_ROW_GAP, AUTO_ROW_WIDTH, balancedStarts, CATALOG_COLUMN_GAP, CATALOG_GAP, CATALOG_GUTTER, CATALOG_TALL, CATALOG_PAD, CATALOG_ROW_GAP, catalogFamilyLabels, catalogSectionIds, dropOrders, isManaged, layoutHeight, layoutRects, pageArrangement, type Rect, SECTION_GAP, SECTION_PAD, sectionColumns, tileSections } from "./layout";
+import { AUTO_GAP, AUTO_ROW_GAP, AUTO_ROW_WIDTH, balancedStarts, CATALOG_COLUMN_GAP, CATALOG_GAP, CATALOG_GUTTER, CATALOG_TALL, CATALOG_PAD, CATALOG_ROW_GAP, catalogFamilyLabels, catalogSectionIds, FLOW_TILE_ASPECT, layoutHeight, layoutRects, type Rect, SECTION_GAP, SECTION_PAD, sectionColumns, tileFlows, tileSections } from "./layout";
 import type { CanvasNode } from "./types";
 
 const node = (id: string, patch: Partial<CanvasNode> = {}): CanvasNode => ({
   id, pageId: "page", parentId: null, kind: "frame", name: id, x: 0, y: 0,
   width: 400, height: 600, measuredHeight: null, src: null, thumbLo: null, thumbHi: null, rev: 1, ...patch,
 });
-const section = (id: string, patch: Partial<CanvasNode> = {}) => node(id, { kind: "section", layout: "auto", width: 0, height: null, ...patch });
+const section = (id: string, patch: Partial<CanvasNode> = {}) => node(id, { kind: "section", width: 0, height: null, ...patch });
 const rectsOf = (nodes: CanvasNode[]) => layoutRects(nodes, layoutHeight);
 const overlaps = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 /** A group section holding the given nodes: by default one component, which makes it a catalog. */
@@ -124,24 +124,23 @@ describe("automatic sections", () => {
     expect(rectsOf(board).get("4")).toMatchObject({ x: SECTION_PAD, y: SECTION_PAD + 600 + AUTO_ROW_GAP });
   });
 
-  it("tiles nested groups and root sections, keeps a flow on its own row, and moves it after live measurements", () => {
+  it("tiles nested groups and root sections, and moves only what sits below a sheet that grows", () => {
     const nodes = [section("tokens", { order: 0 }), node("token-sheet", { parentId: "tokens", kind: "tokens", height: null, measuredHeight: 1400 }),
       section("components", { order: 1 }), section("buttons", { parentId: "components", order: 2 }), node("button", { parentId: "buttons", kind: "component", height: 80 }),
-      section("inputs", { parentId: "components", order: 3, layout: "free" }), node("input", { parentId: "inputs", kind: "component", x: 1000, y: 2500, height: 120 }),
-      section("screens", { order: 4 }), node("screen", { parentId: "screens" })];
+      section("inputs", { parentId: "components", order: 3 }), node("input", { parentId: "inputs", kind: "component", height: 120 }),
+      section("sheets", { order: 2 }), node("sheet", { parentId: "sheets", kind: "tokens" })];
     const measure = (sheet: number) => layoutRects(nodes, (n) => layoutHeight(n, new Map([["token-sheet", sheet]])));
     const rects = measure(2400);
     const tokens = rects.get("tokens")!, components = rects.get("components")!, buttons = rects.get("buttons")!, inputs = rects.get("inputs")!;
-    expect(components).toMatchObject({ x: tokens.x + tokens.w + SECTION_GAP, y: tokens.y });
+    expect(tokens).toMatchObject({ x: 0, y: 0 });
+    expect(components).toMatchObject({ x: 0, y: tokens.h + SECTION_GAP });
     expect(inputs).toMatchObject({ x: buttons.x + buttons.w + AUTO_GAP, y: buttons.y });
-    expect(rects.get("input")!.y).toBe(inputs.y + SECTION_PAD);
     expect(rects.get("button")!.y).toBe(buttons.y + CATALOG_PAD);
-    // A section of screens reads left to right, so it takes its own row below the tiled sections.
-    const screens = rects.get("screens")!;
-    expect(screens).toMatchObject({ x: tokens.x, y: tokens.y + Math.max(tokens.h, components.h) + SECTION_GAP });
+    const sheets = rects.get("sheets")!;
+    expect(sheets).toMatchObject({ x: Math.max(tokens.w, components.w) + SECTION_GAP, y: 0 });
     const taller = measure(6000);
-    expect(taller.get("components")).toEqual(components);
-    expect(taller.get("screens")).toMatchObject({ x: screens.x, y: screens.y + 3600 });
+    expect(taller.get("components")).toMatchObject({ x: components.x, y: components.y + 3600 });
+    expect(taller.get("sheets")).toEqual(sheets);
   });
 
   it("tiles ten nested groups into four columns, filled top to bottom", () => {
@@ -161,16 +160,46 @@ describe("automatic sections", () => {
     expect(tileSections([{ w: 7000, h: 900 }, { w: 1200, h: 300 }], 80)).toEqual({ offsets: [{ x: 0, y: 0 }, { x: 7080, y: 0 }], w: 8280, h: 900 });
   });
 
-  it("keeps each flow on its own row and tiles the sections between flows", () => {
-    const desktop = Array.from({ length: 2 }, () => ({ kind: "frame" as const, width: 1440 }));
-    const nodes = [section("page"), ...group("onboarding", "page", 0, desktop), ...group("chips", "page", 1), ...group("tabs", "page", 2),
-      ...group("checkout", "page", 3, [{ kind: "frame", width: 390 }])];
+  /** A flow of `screens` auto-height desktop screens, each measured 1440 × `height`. */
+  const flow = (id: string, parentId: string | null, order: number, screens: number, height = 900) =>
+    group(id, parentId, order, Array.from({ length: screens }, () => ({ kind: "frame" as const, width: 1440, height: null, measuredHeight: height })));
+
+  it("keeps a few wide flows one per row", () => {
+    const nodes = [section("page"), ...[0, 1, 2].flatMap((i) => flow(`f${i}`, "page", i, 4))];
     const rects = rectsOf(nodes);
-    const onboarding = rects.get("onboarding")!, chips = rects.get("chips")!, tabs = rects.get("tabs")!, checkout = rects.get("checkout")!;
-    expect(chips).toMatchObject({ x: onboarding.x, y: onboarding.y + onboarding.h + AUTO_ROW_GAP });
-    expect(tabs).toMatchObject({ x: chips.x + chips.w + AUTO_GAP, y: chips.y });
-    // Even a narrow flow that would fit beside the catalogs starts its own row.
-    expect(checkout).toMatchObject({ x: onboarding.x, y: chips.y + chips.h + AUTO_ROW_GAP });
+    const [a, b, c] = ["f0", "f1", "f2"].map((id) => rects.get(id)!);
+    expect(b).toMatchObject({ x: a!.x, y: a!.y + a!.h + AUTO_ROW_GAP });
+    expect(c).toMatchObject({ x: a!.x, y: b!.y + b!.h + AUTO_ROW_GAP });
+    expect(rects.get("page")!.w / rects.get("page")!.h).toBeGreaterThan(1);
+  });
+
+  it("tiles many narrower flows side by side, in order down each column, toward a landscape block", () => {
+    const nodes = [section("page"), ...Array.from({ length: 6 }, (_, i) => flow(`f${i}`, "page", i, 3)).flat()];
+    const rects = rectsOf(nodes);
+    const f = Array.from({ length: 6 }, (_, i) => rects.get(`f${i}`)!);
+    for (const i of [1, 2, 4, 5]) expect(f[i]).toMatchObject({ x: f[i - 1]!.x, y: f[i - 1]!.y + f[i - 1]!.h + AUTO_ROW_GAP });
+    expect(f[3]).toMatchObject({ x: f[0]!.x + f[0]!.w + AUTO_GAP, y: f[0]!.y });
+    const page = rects.get("page")!;
+    expect(page.w / page.h).toBeGreaterThan(1);
+    expect(page.w / page.h).toBeLessThan(FLOW_TILE_ASPECT * 2);
+  });
+
+  it("balances flow columns by height and keeps chosen columns when asked to", () => {
+    const sizes = [{ w: 4000, h: 6000 }, { w: 4000, h: 1000 }, { w: 4000, h: 1000 }, { w: 4000, h: 1000 }, { w: 4000, h: 1000 }];
+    const tiled = tileFlows(sizes, 80, 120);
+    // The tall flow gets a column to itself rather than an even three-and-two split.
+    expect(tiled.starts).toEqual([0, 1]);
+    expect(tileFlows(sizes.map((s) => ({ ...s, h: s.h * 3 })), 80, 120, tiled.starts).starts).toEqual([0, 1]);
+    expect(tileFlows([{ w: 400, h: 900 }], 80, 120)).toEqual({ offsets: [{ x: 0, y: 0 }], w: 400, h: 900, starts: [0] });
+  });
+
+  it("tiles consecutive flows and catalogs as one run", () => {
+    const nodes = [section("page"), ...flow("onboarding", "page", 0, 2), ...group("chips", "page", 1), ...flow("checkout", "page", 2, 1)];
+    const rects = rectsOf(nodes);
+    const sizes = ["onboarding", "chips", "checkout"].map((id) => rects.get(id)!);
+    const block = tileFlows(sizes, AUTO_GAP, AUTO_ROW_GAP);
+    ["onboarding", "chips", "checkout"].forEach((id, i) =>
+      expect(rects.get(id)).toMatchObject({ x: SECTION_PAD + block.offsets[i]!.x, y: SECTION_PAD + block.offsets[i]!.y }));
   });
 
   it("starts frames and nested groups on separate rows", () => {
@@ -199,26 +228,19 @@ describe("automatic sections", () => {
     for (const seed of [7, 113, 997]) expect(layout(seed)).toEqual(before);
   });
 
-  it("keeps automatic sections in one column on a page with manual content, and says which content does it", () => {
-    const tiled = [section("tokens", { order: 0 }), section("components", { order: 1 }), node("button", { parentId: "components", kind: "component" })];
-    expect(rectsOf(tiled).get("components")).toMatchObject({ x: 480 + SECTION_GAP, y: 0 });
-    expect(pageArrangement(tiled)).toEqual({ arrangement: "tiled" });
-    for (const manual of [section("placed", { layout: "free", x: 640, y: 0 }), node("loose", { x: 640, y: 0 })]) {
-      expect(rectsOf([...tiled, manual]).get("components")).toMatchObject({ x: 0, y: 280 + SECTION_GAP });
-      expect(pageArrangement([...tiled, manual])).toEqual({ arrangement: "stacked", stackedBy: [manual] });
-    }
-    expect(pageArrangement([node("loose")])).toEqual({ arrangement: "manual" });
-    expect(pageArrangement([])).toEqual({ arrangement: "tiled" });
-  });
-
-  it("preserves legacy/free arrangements and every loose node", () => {
-    const nodes = [section("legacy", { layout: undefined, x: -900, y: -900 }), node("a", { parentId: "legacy", x: 100, y: 200 }),
-      node("b", { parentId: "legacy", x: 1400, y: 300 }), node("loose", { x: -400, y: 700 }), section("auto", { x: 3000 })];
-    const rects = rectsOf(nodes);
-    expect(rects.get("a")).toMatchObject({ x: 100, y: 200 });
-    expect(rects.get("b")).toMatchObject({ x: 1400, y: 300 });
-    expect(rects.get("legacy")).toEqual({ x: 100 - SECTION_PAD, y: 200 - SECTION_PAD, w: 1700 + SECTION_PAD * 2, h: 700 + SECTION_PAD * 2 });
-    expect(rects.get("loose")).toMatchObject({ x: -400, y: 700 });
+  it("keeps every flow in its column when a live view reports other heights", () => {
+    const nodes = [section("page"), ...Array.from({ length: 9 }, (_, i) => flow(`f${i}`, "page", i, 2 + i % 3)).flat()];
+    const screens = nodes.filter((n) => n.kind === "frame");
+    // Live screens in the first `tall` flows report full-page heights, which alone would rebalance the columns.
+    const columnOf = (tall: number) => {
+      const live = new Map(screens.map((n) => [n.id, Number(n.parentId!.slice(1)) < tall ? 6000 : 300]));
+      const rects = layoutRects(nodes, (n) => layoutHeight(n, live));
+      return Array.from({ length: 9 }, (_, i) => rects.get(`f${i}`)!.x);
+    };
+    const stored = rectsOf(nodes);
+    const columns = Array.from({ length: 9 }, (_, i) => stored.get(`f${i}`)!.x);
+    expect(new Set(columns).size).toBeGreaterThan(1);
+    for (const tall of [1, 3, 6]) expect(columnOf(tall)).toEqual(columns);
   });
 
   it("has stable ordering when metadata arrives in another order, after an edit or deletion", () => {
@@ -231,32 +253,24 @@ describe("automatic sections", () => {
     expect(after.get("c")!.x).toBe(SECTION_PAD + 400 + AUTO_GAP);
   });
 
-  it("moves an automatic section and its descendants together", () => {
-    const nodes = [section("flow", { x: 100, y: 200 }), section("nested", { parentId: "flow" }), node("screen", { parentId: "nested" })];
+  it("ignores stored positions, including those of loose nodes, which flow at the top of the page", () => {
+    const nodes = [section("flow", { x: 100, y: 200, order: 2 }), section("nested", { parentId: "flow" }), node("screen", { parentId: "nested" }),
+      node("loose-a", { x: -400, y: 700, order: 0 }), node("loose-b", { x: 9000, y: -50, order: 1 })];
     const before = rectsOf(nodes);
-    nodes[0]!.x += 700; nodes[0]!.y -= 100;
-    const after = rectsOf(nodes);
-    for (const n of nodes) expect(after.get(n.id)).toEqual({ ...before.get(n.id)!, x: before.get(n.id)!.x + 700, y: before.get(n.id)!.y - 100 });
+    expect(before.get("loose-a")).toMatchObject({ x: 0, y: 0 });
+    expect(before.get("loose-b")).toMatchObject({ x: 400 + SECTION_GAP, y: 0 });
+    expect(before.get("flow")).toMatchObject({ x: 0, y: 600 + SECTION_GAP });
+    for (const n of nodes) { n.x += 700; n.y -= 100; }
+    expect(rectsOf(nodes)).toEqual(before);
   });
 
-  it("uses independent section stacks for each page", () => {
-    const nodes = [section("one", { pageId: "a", x: 100, y: 200 }), section("two", { pageId: "b", x: 1000, y: 2000 })];
-    expect(rectsOf(nodes).get("two")).toMatchObject({ x: 1000, y: 2000 });
-  });
-
-  it("leaves a dragged child floating while preserving its slot and drop target", () => {
-    const nodes = [section("flow"), node("a", { parentId: "flow", x: 8000, y: 8000 }), node("b", { parentId: "flow" })];
-    const rects = layoutRects(nodes, layoutHeight, new Set(["a"]));
-    expect(rects.get("a")).toMatchObject({ x: 8000, y: 8000 });
-    expect(rects.get("b")).toMatchObject({ x: SECTION_PAD + 400 + AUTO_GAP, y: SECTION_PAD });
-    expect(rects.get("flow")!.w).toBe(800 + AUTO_GAP + SECTION_PAD * 2);
-  });
-
-  it("keeps root section slots steady while one section is being dragged", () => {
-    const nodes = [section("a", { order: 1, x: -1000, y: -1000 }), section("b", { order: 2, x: 100, y: 200 })];
-    const rects = layoutRects(nodes, layoutHeight, new Set(["a"]));
-    expect(rects.get("a")).toMatchObject({ x: -1000, y: -1000 });
-    expect(rects.get("b")).toMatchObject({ x: 100 + 480 + SECTION_GAP, y: 200 });
+  it("arranges each page from its own origin, and treats a node whose section is missing as top level", () => {
+    const nodes = [section("one", { pageId: "a", x: 100, y: 200 }), section("two", { pageId: "b", x: 1000, y: 2000 }),
+      node("orphan", { pageId: "b", parentId: "gone", order: 5 })];
+    const rects = rectsOf(nodes);
+    expect(rects.get("one")).toMatchObject({ x: 0, y: 0 });
+    expect(rects.get("two")).toMatchObject({ x: 0, y: 0 });
+    expect(rects.get("orphan")).toMatchObject({ y: 280 + SECTION_GAP });
   });
 
   it("lays out 5000 variable-height screens with no overlap between rows or groups", () => {
@@ -271,10 +285,10 @@ describe("automatic sections", () => {
     expect(flows.some((a, i) => flows.some((b, j) => i !== j && overlaps(a, b)))).toBe(false);
     for (let group = 0; group < 100; group++) {
       if (group) {
-        // Reading order: beside the previous group in its row, or below the whole previous row.
+        // Reading order: below the previous group in its column, or at the top of the next column.
         const before = flows[group - 1]!, current = flows[group]!;
-        if (current.y === before.y) expect(current.x).toBe(before.x + before.w + SECTION_GAP);
-        else expect(current.y).toBe(Math.max(...flows.filter((r) => r.y === before.y).map((r) => r.y + r.h)) + SECTION_GAP);
+        if (current.x === before.x) expect(current.y).toBe(before.y + before.h + SECTION_GAP);
+        else expect(current).toMatchObject({ x: Math.max(...flows.filter((r) => r.x === before.x).map((r) => r.x + r.w)) + SECTION_GAP, y: 0 });
       }
       // Screens fill a row left to right until the width budget, then the next row starts below the tallest one.
       let row: Rect[] = [];
@@ -293,55 +307,4 @@ describe("automatic sections", () => {
   });
 });
 
-describe("drag ordering", () => {
-  it("treats descendants of a free group inside automatic layout as having derived coordinates", () => {
-    const frames = [section("auto"), section("free", { parentId: "auto", layout: "free" }), node("nested", { parentId: "free" }), node("loose")];
-    const nodes = new Map(frames.map((f) => [f.id, f]));
-    expect(isManaged(nodes.get("nested")!, nodes)).toBe(true);
-    expect(isManaged(nodes.get("loose")!, nodes)).toBe(false);
-  });
 
-  it("inserts before, between and after siblings without changing their orders", () => {
-    const nodes = [section("flow"), node("a", { parentId: "flow", order: 10 }), node("b", { parentId: "flow", order: 20 }), node("moving", { order: 30 })];
-    const rects = rectsOf(nodes);
-    const a = rects.get("a")!, b = rects.get("b")!, y = a.y + a.h / 2;
-    const first = dropOrders(nodes, rects, ["moving"], "flow", "page", { x: a.x - 1, y }).get("moving")!;
-    const middle = dropOrders(nodes, rects, ["moving"], "flow", "page", { x: (a.x + a.w + b.x) / 2, y }).get("moving")!;
-    const last = dropOrders(nodes, rects, ["moving"], "flow", "page", { x: b.x + b.w + 1, y }).get("moving")!;
-    expect(first).toBeLessThan(10); expect(middle).toBeGreaterThan(10); expect(middle).toBeLessThan(20); expect(last).toBeGreaterThan(20);
-  });
-
-  it("preserves the relative order of a moved block and supports empty groups", () => {
-    const nodes = [section("flow"), node("a", { order: 10 }), node("b", { order: 20 })];
-    const orders = dropOrders(nodes, rectsOf(nodes), ["b", "a"], "flow", "page", { x: 0, y: 0 });
-    expect(orders.get("a")).toBeLessThan(orders.get("b")!);
-  });
-
-  it("reorders page sections without shifting the stack origin", () => {
-    const nodes = [section("a", { order: 10 }), section("b", { order: 20 }), section("c", { order: 30 })];
-    const before = rectsOf(nodes);
-    const orders = dropOrders(nodes, before, ["c"], null, "page", { x: 0, y: -100 });
-    nodes[2]!.order = orders.get("c");
-    const after = rectsOf(nodes);
-    expect(after.get("c")).toMatchObject({ x: 0, y: 0 });
-    expect(after.get("a")).toMatchObject({ x: 0, y: 280 + SECTION_GAP });
-  });
-
-  it("inserts between sections stacked in a tiled column, and after the last column", () => {
-    const nodes = [section("a", { order: 10 }), section("b", { order: 20 }), section("c", { order: 30 }), section("moving", { order: 40 })];
-    const rects = rectsOf(nodes), a = rects.get("a")!, b = rects.get("b")!, c = rects.get("c")!;
-    expect(b.x).toBe(a.x); expect(c.y).toBe(a.y);
-    const between = dropOrders(nodes, rects, ["moving"], null, "page", { x: a.x + a.w / 2, y: (a.y + a.h + b.y) / 2 }).get("moving")!;
-    expect(between).toBeGreaterThan(10); expect(between).toBeLessThan(20);
-    expect(dropOrders(nodes, rects, ["moving"], null, "page", { x: c.x + c.w / 2, y: c.y + c.h + 10 }).get("moving")).toBeGreaterThan(30);
-  });
-
-  it("rebalances a group when a narrow order gap has exhausted numeric precision", () => {
-    const nodes = [section("flow"), node("a", { parentId: "flow", order: 1 }), node("b", { parentId: "flow", order: 1 + Number.EPSILON }), node("moving", { order: 30 })];
-    const rects = rectsOf(nodes), a = rects.get("a")!, b = rects.get("b")!;
-    const orders = dropOrders(nodes, rects, ["moving"], "flow", "page", { x: (a.x + a.w + b.x) / 2, y: a.y + a.h / 2 });
-    expect(orders.size).toBe(3);
-    expect(orders.get("a")).toBeLessThan(orders.get("moving")!);
-    expect(orders.get("moving")).toBeLessThan(orders.get("b")!);
-  });
-});
