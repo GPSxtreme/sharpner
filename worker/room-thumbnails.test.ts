@@ -242,15 +242,31 @@ describe("thumbnail scheduling", () => {
     expect(themes("b")).toEqual([""]);
   });
 
-  it("does no automatic work while nobody is viewing, and coalesces rapid edits", async () => {
-    const {room,create,apply,enqueue,stopViewing} = fixture(true);
+  it("renders an agent's edit while nobody is viewing, and coalesces rapid edits", async () => {
+    const {room,create,apply,enqueue,stopViewing,db} = fixture(true);
     await create("screen");
     await apply([{t:"node.put",id:"screen",node:{source:"<p>One</p>"}},{t:"node.put",id:"screen",node:{source:"<p>Two</p>"}}]);
     expect(await room.renderThumbnails()).toMatchObject({browserMs:0,rendered:0,more:true});
     stopViewing(); enqueue.mockClear();
     await apply([{t:"node.put",id:"screen",node:{source:"<p>Latest</p>"}}]);
-    expect(await room.renderThumbnails()).toMatchObject({browserMs:0,rendered:0,more:false});
-    expect(enqueue).not.toHaveBeenCalled(); expect(renderer.launch).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalled();
+    db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+    expect(await room.renderThumbnails()).toMatchObject({rendered:1,more:false});
+    expect(renderer.loadFrame.mock.calls.at(-1)![1]).toMatchObject({id:"screen",html:expect.stringContaining("Latest")});
+  });
+
+  it("re-renders a screen that uses a component an agent edited, with nobody viewing", async () => {
+    const {room,create,apply,stopViewing,db,render} = fixture(true);
+    await create("button",{kind:"component",name:"Button",source:"<button>Old</button>"});
+    await create("screen",{source:"<main><x-button></x-button></main>"});
+    await render();
+    const before = room.node("screen")!.rev;
+    stopViewing(); renderer.loadFrame.mockClear();
+    await apply([{t:"node.put",id:"button",node:{source:"<button>New</button>"}}]);
+    expect(room.node("screen")!.rev).toBe(before + 1);
+    db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+    expect(await room.renderThumbnails()).toMatchObject({rendered:2});
+    expect(renderer.loadFrame.mock.calls.map(([,n])=>n.id).sort()).toEqual(["button","screen"]);
   });
 
   it("drops renders raced by content edits, with capped retries", async () => {
@@ -491,11 +507,11 @@ describe("backfill", () => {
       expect(await migrated.renderThumbnails()).toMatchObject({ rendered: 2, more: false });
       expect(renderer.loadFrame.mock.calls.map(([, n]) => (n as { id: string }).id).sort()).toEqual(["one", "two"]);
       expect(db.prepare("SELECT v FROM meta WHERE k = 'backfill'").get()).toEqual({ v: "" });
-      // Finished: no viewer means no automatic work again.
+      // Finished: a later edit still renders without a viewer, like any file's.
       void room; void render;
       await apply([{ t: "node.put", id: "one", node: { source: "<p>edited</p>" } }]);
       db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
-      expect(await migrated.renderThumbnails()).toMatchObject({ rendered: 0, more: false });
+      expect(await migrated.renderThumbnails()).toMatchObject({ rendered: 1, more: false });
     } finally { vi.useRealTimers(); }
   });
 

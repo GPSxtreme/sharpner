@@ -123,15 +123,14 @@ describe("persistent file covers", () => {
     expect(projected.at(-1)).toBe(room.cover().url);
   });
 
-  it("renders an explicitly requested cover without viewers, leaving unrelated frames queued", async () => {
+  it("renders an explicitly requested cover and every other preview without viewers", async () => {
     const {room,create,apply} = fixture(true,false);
     await create("unviewed"); await create("cover");
-    expect(await room.renderThumbnails()).toMatchObject({rendered:0,browserMs:0});
     await apply([{t:"cover.set",id:"cover"}]);
-    expect(await room.renderThumbnails()).toMatchObject({rendered:1});
-    expect(renderer.loadFrame.mock.calls.map(([,n])=>n.id)).toEqual(["cover"]);
+    expect(await room.renderThumbnails()).toMatchObject({rendered:2});
+    expect(renderer.loadFrame.mock.calls.map(([,n])=>n.id).sort()).toEqual(["cover", "unviewed"]);
     expect(room.cover().url).toMatch(/cover-1-[a-f0-9]{64}-hi\.webp$/);
-    expect(room.node("unviewed")!.thumbHi).toBeNull();
+    expect(room.node("unviewed")!.thumbHi).not.toBeNull();
     expect(await room.renderThumbnails()).toMatchObject({rendered:0,browserMs:0});
   });
 
