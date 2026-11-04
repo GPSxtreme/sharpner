@@ -85,7 +85,8 @@ export const CATALOG_PAD = 64;
 export const CATALOG_GAP = 40;
 export const CATALOG_ROW_GAP = 64;
 export const CATALOG_ROW_WIDTH = 1600;
-export const CATALOG_GUTTER = 160;
+/** Wide enough that a 12px family name of about 12 characters fits at the smallest zoom that shows catalog labels. */
+export const CATALOG_GUTTER = 240;
 /** Catalogs taller than this multiple of their width split their family rows into columns; shorter ones keep one. */
 export const CATALOG_TALL = 1.5;
 /** Space between catalog columns. The next column's gutter holds its family names, so this only clears the specimens. */

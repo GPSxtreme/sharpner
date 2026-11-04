@@ -55,7 +55,7 @@ describe("component catalogs", () => {
   ]).flat()];
 
   it("keeps a catalog that isn't much taller than wide in one column", () => {
-    // Five rows are 5 × 120 + 4 × 64 = 856 tall against a 160 + 440 = 600 wide column: under the threshold.
+    // Five rows are 5 × 120 + 4 × 64 = 856 tall against a 240 + 440 = 680 wide column: under the threshold.
     const rects = rectsOf(families(5));
     expect(new Set([...rects].filter(([id]) => id.endsWith("-a")).map(([, r]) => r.x))).toEqual(new Set([CATALOG_PAD + CATALOG_GUTTER]));
     expect(rects.get("chips")!.h - 2 * CATALOG_PAD).toBeLessThanOrEqual((rects.get("chips")!.w - 2 * CATALOG_PAD) * CATALOG_TALL);
