@@ -5,8 +5,10 @@
  * own daily budget first, then the normal budgets, and wait behind files someone is viewing.
  */
 export const BACKFILL = {
-  files: new Set(["2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a", "c84c7946-be06-46d7-9b1d-c4486691dabb", "4d0f3398-96fd-4b9c-a8fc-dd7b1b75f437"]),
-  until: Date.UTC(2026, 10, 4),
+  // Extended on 4 Nov 2026 to re-render every component preview after the compact-specimen migrations, and the
+  // owner's sharpner file added.
+  files: new Set(["2f86e75c-5e8a-4a4d-a5a6-5a065a943e4a", "c84c7946-be06-46d7-9b1d-c4486691dabb", "4d0f3398-96fd-4b9c-a8fc-dd7b1b75f437", "040cd02e-2da6-478a-b9a6-ff4d8d7c11cb"]),
+  until: Date.UTC(2026, 10, 5, 12),
 };
 export const backfilling = (fileId: string | undefined, now = Date.now()) => !!fileId && BACKFILL.files.has(fileId) && now < BACKFILL.until;
 
@@ -23,9 +25,11 @@ export const THUMBNAIL_POLICY = {
   reservationMs: 45_000,
   screenshotSessionMs: 110_000,
   screenshotLeaseMs: 150_000,
-  fileDailyMs: 30 * 60_000,
-  teamDailyMs: 60 * 60_000,
-  globalDailyMs: 4 * 60 * 60_000,
-  backfillDailyMs: 60 * 60_000,
+  // Daily budgets were 30 min per file, 60 min per team, 4 h overall and 60 min of backfill. The owner lifted them
+  // on 4 Nov 2026 until someone abuses previews; spend is still recorded per file and team, so they can return.
+  fileDailyMs: 1_000_000_000,
+  teamDailyMs: 1_000_000_000,
+  globalDailyMs: 1_000_000_000,
+  backfillDailyMs: 1_000_000_000,
   maxQueuedFiles: 1000,
 } as const;

@@ -42,10 +42,7 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Edit debounce | 1.2 seconds |
 | Fair turn / hard session deadline | 8 / 20 seconds; 15 seconds when no other file can run |
 | Reserved time before admission | 45 seconds, refunded to measured elapsed time |
-| Daily automatic browser time per file | 30 minutes |
-| Daily automatic browser time per workspace | 1 hour |
-| Daily automatic browser time globally | 4 hours |
-| Daily browser time for the temporary `BACKFILL` files | 1 hour, separate from the global budget; then the normal budgets apply |
+| Daily automatic browser time per file, per workspace, globally and for `BACKFILL` files | Lifted on 4 Nov 2026: about 11.5 days each, so never reached. Spend is still recorded. Earlier values were 30 minutes, 1 hour, 4 hours and 1 hour. |
 | Queued files | 1,000 |
 | Attempts per node revision | 3 |
 
@@ -90,6 +87,9 @@ observed queue delay and per-team demand; the cost estimates below assume the
 requested work is admitted, rather than treating deferred work as free capacity.
 At the measured throughput, 1,000 teams with the modeled workload need about
 216 automatic browser-hours/month, still below one continuously occupied browser.
+
+With the daily budgets lifted, the single automatic browser is the only limit: at most 720
+browser-hours in a 30-day month, about $64/month above the included hours if it never stops.
 
 ## Local measurements, 2026-11-01
 
