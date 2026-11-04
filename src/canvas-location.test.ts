@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CanvasNode, Page } from "../shared/types";
-import { canvasLocationUrl, readCanvasLocation, resolveCanvasLocation } from "./canvas-location";
+import { canvasLocationUrl, readCanvasLocation, resolveCanvasLocation, selectionFocusFor } from "./canvas-location";
 import { canvasNavigation } from "./canvas-navigation";
 
 const pages: Page[] = [{ id: "overview", name: "Overview", sort: 0 }, { id: "checkout", name: "Checkout", sort: 1 }];
@@ -65,6 +65,16 @@ describe("canvas deep links", () => {
     moved.delete("receipt");
     moved.set("payment", { ...nodes.get("payment")!, pageId: "overview" });
     expect(resolveCanvasLocation(readCanvasLocation("?page=checkout&node=payment&node=receipt"), pages, moved, "overview")).toEqual({ pageId: "checkout", selection: [] });
+  });
+
+  it("asks the camera to fit every linked selection but shares one empty request", () => {
+    // React skips a state update to the same object, so repeated local selections don't re-render the editor.
+    expect(selectionFocusFor([])).toBe(selectionFocusFor([]));
+    expect(selectionFocusFor([]).ids).toEqual([]);
+    // History back to the same nodes is a new request, so the canvas fits them again.
+    const ids = ["payment"];
+    expect(selectionFocusFor(ids)).not.toBe(selectionFocusFor(ids));
+    expect(selectionFocusFor(ids).ids).toEqual(["payment"]);
   });
 
   it.each([{ w: 1440, h: 900 }, { w: 390, h: 844 }])("fits a linked frame far away on a large canvas at $w×$h", (size) => {

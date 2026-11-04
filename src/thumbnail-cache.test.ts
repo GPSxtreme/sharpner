@@ -152,6 +152,82 @@ describe("viewport thumbnail cache", () => {
   });
 });
 
+describe("decoded previews", () => {
+  /** A loader that hands back bitmaps on demand. Closing one reports 0x0, as a real ImageBitmap does. */
+  function bitmapLoader(width = 256, height = 256) {
+    const bitmaps = new Map<string, { width: number; height: number; close: ReturnType<typeof vi.fn> }>();
+    const deliveries = new Map<string, () => void>();
+    const loadImage = (_image: HTMLImageElement, url: string, decoded: (bitmap: ImageBitmap) => void) => {
+      deliveries.set(url, () => {
+        const bitmap = { width, height, close: vi.fn(() => { bitmap.width = bitmap.height = 0; }) };
+        bitmaps.set(url, bitmap);
+        decoded(bitmap as unknown as ImageBitmap);
+      });
+      return () => {};
+    };
+    return { loadImage, bitmaps, deliver: (url: string) => deliveries.get(url)!() };
+  }
+
+  it("draws a bitmap the loader decoded, budgets its decoded size and closes it on eviction", () => {
+    const loader = bitmapLoader(512, 256);
+    const f = fixture({ maxEntries: 1, maxPixels: PIXELS * 4, loadImage: loader.loadImage });
+    f.cache.setViewport([request('a')]);
+    expect(f.cache.get('a')).toBeNull();
+    loader.deliver('a');
+    expect(f.cache.get('a')).toBe(loader.bitmaps.get('a'));
+    expect(f.cache.stats.decodedPixels).toBe(512 * 256);
+    expect(f.changed).toHaveBeenCalledTimes(1);
+    f.cache.setViewport([request('b')]);
+    expect(loader.bitmaps.get('a')!.close).toHaveBeenCalledTimes(1);
+    expect(f.cache.stats.decodedPixels).toBe(0);
+    loader.deliver('b');
+    f.cache.dispose();
+    expect(loader.bitmaps.get('b')!.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a bitmap that arrives after its load was cancelled or the cache disposed", () => {
+    const loader = bitmapLoader();
+    const f = fixture({ loadImage: loader.loadImage });
+    f.cache.setViewport([request('a'), request('b')]);
+    f.cache.setViewport([request('b')]);
+    loader.deliver('a');
+    expect(loader.bitmaps.get('a')!.close).toHaveBeenCalledTimes(1);
+    expect(f.cache.get('a')).toBeNull();
+    expect(f.cache.stats.loading).toBe(1);
+    f.cache.dispose();
+    loader.deliver('b');
+    expect(loader.bitmaps.get('b')!.close).toHaveBeenCalledTimes(1);
+    expect(f.changed).not.toHaveBeenCalled();
+  });
+
+  it("makes a loaded image ready only once it has decoded, and still shows it if decoding fails", async () => {
+    const decodes: { resolve: () => void; reject: (error: Error) => void }[] = [];
+    const images: { src: string; naturalWidth: number; naturalHeight: number; onload: (() => void) | null }[] = [];
+    const changed = vi.fn();
+    const cache = new ThumbnailCache(changed, { createImage: () => {
+      const image = {
+        src: "", naturalWidth: 256, naturalHeight: 256, onload: null, onerror: null, removeAttribute: vi.fn(),
+        decode: () => new Promise<void>((resolve, reject) => decodes.push({ resolve, reject })),
+      };
+      images.push(image);
+      return image as unknown as HTMLImageElement;
+    } });
+    cache.setViewport([request('a'), request('b')]);
+    expect(images.map((image) => image.src)).toEqual(['a', 'b']);
+    images[0]!.onload!(); images[1]!.onload!();
+    expect(cache.get('a')).toBeNull();
+    expect(cache.stats.loading).toBe(2);
+    decodes[0]!.resolve();
+    decodes[1]!.reject(new Error("EncodingError"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cache.get('a')).toBe(images[0]);
+    expect(cache.get('b')).toBe(images[1]);
+    expect(cache.stats.decodedPixels).toBe(PIXELS * 2);
+    expect(changed).toHaveBeenCalledTimes(2);
+    cache.dispose();
+  });
+});
+
 describe("image resolution policy", () => {
   it("never substitutes the original upload for a missing low-resolution preview", () => {
     const image = { kind: 'image', src: '/original-4k.jpg', thumbHi: '/original-4k.jpg', thumbLo: null };

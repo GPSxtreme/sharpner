@@ -108,6 +108,37 @@ describe("raster previews while zoomed out", () => {
     f.cache.dispose(); f.highCache.dispose();
   });
 
+  it("draws decoded bitmaps and skips a kept preview once the cache has closed it", () => {
+    const bitmaps: { width: number; height: number; close: () => void }[] = [];
+    const deliveries: (() => void)[] = [];
+    // A one-entry budget evicts the previous preview while its restyled replacement loads.
+    const f = fixture({ maxEntries: 1, loadImage: (_image, _url, decoded) => {
+      const bitmap = { width: 256, height: 262, close() { bitmap.width = bitmap.height = 0; } };
+      bitmaps.push(bitmap);
+      deliveries.push(() => decoded(bitmap as unknown as ImageBitmap));
+      return () => {};
+    } });
+    // Like a browser, refuse to draw a closed bitmap.
+    f.drawImage.mockImplementation((image: { width: number }) => {
+      if (!image.width) throw new DOMException("The image source is detached", "InvalidStateError");
+    });
+    const upgrades = { enabled: false, settled: true };
+    f.paint(0.5, [component], upgrades);
+    deliveries.shift()!();
+    f.paint(0.5, [component], upgrades);
+    expect(f.drawImage.mock.lastCall?.[0]).toBe(bitmaps[0]);
+    expect(f.drawImage.mock.lastCall?.slice(1, 4)).toEqual([0, 0, 256]);
+    const restyled = { ...component, rev: 2, thumbRev: 2, thumbLo: "/button-dark-256.webp", thumbHi: "/button-dark-1280.webp" };
+    f.drawImage.mockClear();
+    expect(() => f.paint(0.5, [restyled], upgrades)).not.toThrow();
+    expect(bitmaps[0]!.width).toBe(0);
+    expect(f.drawImage).not.toHaveBeenCalled();
+    deliveries.shift()!();
+    f.paint(0.5, [restyled], upgrades);
+    expect(f.drawImage.mock.lastCall?.[0]).toBe(bitmaps[1]);
+    f.cache.dispose(); f.highCache.dispose();
+  });
+
   it("dims a preview that trails its node's revision until the re-render arrives", () => {
     const f = fixture();
     const upgrades = { enabled: false, settled: true };

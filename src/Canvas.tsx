@@ -2,14 +2,16 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, use
 import { AUTO_ROW_GAP, CATALOG_GUTTER, CATALOG_ROW_GAP, contains, descendantsOf, dropOrders, familyOf, isManaged, union, type Rect } from "../shared/layout";
 import { previewCurrent, renderedHtml, type CanvasNode, type CommentAnchor, type CommentThread, type DesignSystem, type Op } from "../shared/types";
 import { commentPoint } from "../shared/comments";
+import { scopeDesign } from "../shared/component-scope";
 import { componentName } from "../shared/specimens";
 import { colorFor, uploadImage } from "./api";
 import { toast } from "./toast";
 import { Avatar } from "./Avatar";
-import { ThumbnailCache, thumbnailSource } from "./thumbnail-cache";
+import { ThumbnailCache, previewSize, thumbnailSource, type PreviewImage } from "./thumbnail-cache";
 import { PreviewLoader } from "./preview-loader";
 import { applyTouch, TouchNavigator } from "./touch-gestures";
 import { canvasGestureBoundary } from "./canvas-gesture-boundary";
+import { marqueeCommit, marqueeRect, marqueeSelection, sameSelection } from "./canvas-marquee";
 import type { Room } from "./room";
 import { canInteract, HI_RES_MIN_PIXELS, planCanvasRendering, type Camera as Cam, type ProjectedNode } from "./canvas-render-plan";
 import { Button } from "@/components/ui/button";
@@ -50,6 +52,8 @@ type Props = {
   /** Opening a link or traversing history fits its selection; local selections leave the camera alone. */
   selectionFocus?: { ids: string[] };
   onSelect: (ids: string[]) => void;
+  /** The selection a marquee covers while it is dragged, before onSelect commits it; null otherwise. */
+  onMarqueeSelection?: (ids: string[] | null) => void;
   /** Link viewers can look around but never select, move, delete, or add anything. */
   readOnly?: boolean;
   /** The design this viewer is playing, owned by the editor so page and selection changes can end it. */
@@ -63,7 +67,7 @@ type Props = {
   draftComment?: CommentAnchor | null;
 };
 
-export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSelect, readOnly = false, interactionId, onInteract, commentMode = false, activeCommentId, commentFocus, onPlaceComment, onOpenComment, draftComment }: Props) {
+export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSelect, onMarqueeSelection, readOnly = false, interactionId, onInteract, commentMode = false, activeCommentId, commentFocus, onPlaceComment, onOpenComment, draftComment }: Props) {
   useSyncExternalStore(room.subscribe, room.getVersion);
   const rootRef = useRef<HTMLDivElement>(null);
   const [playbackReset, setPlaybackReset] = useState(0);
@@ -107,9 +111,18 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
     update();
     return () => media.removeEventListener("change", update);
   }, []);
-  const [marquee, setMarquee] = useState<Rect | null>(null);
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
+  // A marquee shows its selection here while dragging and writes it to the URL once, on release.
+  const [marquee, setMarquee] = useState<{ rect: Rect; selection: string[] } | null>(null);
+  const shownSelection = marquee?.selection ?? selection;
+  const selectionRef = useRef(shownSelection);
+  selectionRef.current = shownSelection;
+  // The editor's selection toolbar follows the drag too. It is told only when the covered set changes,
+  // and once more (null) when the marquee ends or this page's canvas unmounts.
+  const marqueeIds = marquee?.selection ?? null;
+  const reportMarquee = useRef(onMarqueeSelection);
+  reportMarquee.current = onMarqueeSelection;
+  useEffect(() => { reportMarquee.current?.(marqueeIds); }, [marqueeIds]);
+  useEffect(() => () => reportMarquee.current?.(null), []);
 
   const layout = useMemo(() => new CanvasLayout(room), [room]);
   const { frames, rects, catalogs, sections, nodes, families } = layout.page(pageId);
@@ -405,7 +418,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
   const gesture = useRef<
     | { kind: "pan"; sx: number; sy: number; moved: boolean }
     | { kind: "move"; sx: number; sy: number; moved: boolean; start: Map<string, { x: number; y: number }>; anchors: Map<string, { x: number; y: number }>; roots: string[]; sentAt: number }
-    | { kind: "marquee"; wx: number; wy: number; base: string[] }
+    | { kind: "marquee"; wx: number; wy: number; base: string[]; selection: string[] | null }
     | null
   >(null);
 
@@ -461,7 +474,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
       gesture.current = { kind: "pan", sx, sy, moved: false };
     } else if (!hit) {
       const w = toWorld(sx, sy);
-      gesture.current = { kind: "marquee", wx: w.x, wy: w.y, base: selection };
+      gesture.current = { kind: "marquee", wx: w.x, wy: w.y, base: selection, selection: null };
     } else {
       const id = hit;
       let next = selection;
@@ -561,14 +574,12 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
         sendMoves(g.roots, false, g.anchors, g.start);
       }
     } else {
-      const w = toWorld(sx, sy);
-      const r = { x: Math.min(g.wx, w.x), y: Math.min(g.wy, w.y), w: Math.abs(w.x - g.wx), h: Math.abs(w.y - g.wy) };
-      setMarquee(r);
-      const hits = nodes.filter((f) => {
-        const fr = rectOf(f);
-        return fr.x < r.x + r.w && fr.x + fr.w > r.x && fr.y < r.y + r.h && fr.y + fr.h > r.y;
-      }).map((f) => f.id);
-      onSelect([...new Set([...g.base, ...hits])]);
+      const rect = marqueeRect({ x: g.wx, y: g.wy }, toWorld(sx, sy));
+      // The gesture keeps the latest result, since the release handler may run before this state renders.
+      // An unchanged set keeps its array, so only a change in coverage reaches the editor.
+      const covered = marqueeSelection(g.base, rect, nodes, rectOf);
+      if (!g.selection || !sameSelection(g.selection, covered)) g.selection = covered;
+      setMarquee({ rect, selection: g.selection });
     }
   };
 
@@ -578,6 +589,11 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
     gesture.current = null;
     setMarquee(null);
     if (g?.kind === "pan" && !g.moved && !navigationOnly) onSelect([]);
+    if (g?.kind === "marquee") {
+      // The URL update renders together with the cleared marquee, so the old selection never shows in between.
+      const next = marqueeCommit(selection, g.selection);
+      if (next) onSelect(next);
+    }
     if (g?.kind === "move" && g.moved) {
       const { sx, sy } = local(e);
       sendMoves(g.roots, true, g.anchors, g.start, toWorld(sx, sy));
@@ -647,7 +663,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
   const peerSelections = new Map<string, string>();
   for (const p of peers) for (const id of p.selection) peerSelections.set(id, colorFor(p.id));
   const grid = 24 * cam.z;
-  const selected = new Set(selection);
+  const selected = new Set(shownSelection);
 
   useLayoutEffect(() => {
     if (rasterRef.current) {
@@ -671,7 +687,12 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onLostPointerCapture={(e) => { if (e.pointerType === "touch") onTouch(e, "cancel"); }}
+      // Capture is lost after every pointerup, when the gesture is already gone. Losing it mid-drag ends a
+      // marquee like a release, so its selection is committed rather than dropped by the next gesture.
+      onLostPointerCapture={(e) => {
+        if (e.pointerType === "touch") onTouch(e, "cancel");
+        else if (gesture.current?.kind === "marquee") onPointerUp(e);
+      }}
       onPointerLeave={() => room.setPresence({ cursor: null })}
       onDoubleClick={onDoubleClick}
       onDragOver={(e) => e.preventDefault()}
@@ -731,7 +752,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
       {marquee && (
         <div
           className="marquee"
-          style={{ left: marquee.x * cam.z + cam.x, top: marquee.y * cam.z + cam.y, width: marquee.w * cam.z, height: marquee.h * cam.z }}
+          style={{ left: marquee.rect.x * cam.z + cam.x, top: marquee.rect.y * cam.z + cam.y, width: marquee.rect.w * cam.z, height: marquee.rect.h * cam.z }}
         />
       )}
       {frames.length === 0 && room.status === "open" && (
@@ -814,6 +835,8 @@ const FrameNode = memo(function FrameNode({ frame: f, label, catalog, x, y, heig
     return () => clearTimeout(fallback);
   }, [handoff, top]);
   const showLive = !playback && (live || handoff) && html !== undefined;
+  // Only the components this design uses, so an edit to another one keeps its document, iframe and session.
+  const usedDesign = html !== undefined && (showLive || playback) ? scopeDesign(html, design) : design;
   const cls = ["frame", f.kind, playback && "interacting", f.parentId && "nested", catalog && "catalog-item", selected && "selected", agent && "working", settling && "settle", fresh && "fresh", outdated(f) && "outdated"].filter(Boolean).join(" ");
   return (
     <div
@@ -827,12 +850,12 @@ const FrameNode = memo(function FrameNode({ frame: f, label, catalog, x, y, heig
         {lo && <img ref={top === lo ? topImage : undefined} src={lo} alt="" draggable={false} decoding="async" onLoad={top === lo ? () => setHandoff(false) : undefined} />}
         {tier === "hi" && hi && hi !== lo && <img ref={topImage} src={hi} alt="" draggable={false} decoding="async" onLoad={() => setHandoff(false)} />}
         {!lo && !showLive && !playback && <div className="frame-placeholder">{f.kind === "image" ? "" : "Rendering…"}</div>}
-        {showLive && <LiveFrame id={f.id} html={html} design={design} width={f.width} height={height} />}
+        {showLive && <LiveFrame id={f.id} html={html} design={usedDesign} width={f.width} height={height} />}
         {playback && (html === undefined
           ? <InteractionLoading onTimeout={() => playback.stop("timeout")} />
           // A new key is a new session: Reset, or any change to what the design renders.
-          : <InteractionFrame key={`${f.rev}:${f.width}:${designKey(design)}:${playback.reset}`} id={f.id} title={`Interact with ${f.name}`}
-              html={html} design={design} width={f.width} height={height} onStop={playback.stop} />)}
+          : <InteractionFrame key={`${f.rev}:${f.width}:${designKey(usedDesign)}:${playback.reset}`} id={f.id} title={`Interact with ${f.name}`}
+              html={html} design={usedDesign} width={f.width} height={height} onStop={playback.stop} />)}
         {(agent || settling) && <AgentSheen />}
       </div>
       {(agent || settling) && <Trace doneAt={doneAt} />}
@@ -850,8 +873,9 @@ const FrameNode = memo(function FrameNode({ frame: f, label, catalog, x, y, heig
 const PLAY_BUTTON_MIN_WIDTH = 160;
 
 /**
- * Restarts playback only when design content changes. A design revision can change before its
- * new component sources arrive, so object identity alone would restart a session twice.
+ * Restarts playback only when the content of the design it plays with changes (see `scopeDesign`). A design
+ * revision can change before its new component sources arrive, so object identity alone would restart a
+ * session twice.
  */
 const designKeys = new WeakMap<DesignSystem, string>();
 function designKey(design: DesignSystem) {
@@ -918,7 +942,7 @@ const OUTDATED_ALPHA = 0.45;
 const outdated = (f: CanvasNode) => f.kind !== "image" && !!f.thumbHi && !previewCurrent(f);
 
 /** Per canvas, the preview last painted for each node: it stays up while a replacement loads. */
-const lastPainted = new WeakMap<HTMLCanvasElement, Map<string, HTMLImageElement>>();
+const lastPainted = new WeakMap<HTMLCanvasElement, Map<string, PreviewImage>>();
 
 export function paintRaster(
   canvas: HTMLCanvasElement,
@@ -993,7 +1017,7 @@ export function paintRaster(
   const nodeBaseline = labelBaseline(ctx);
   let painted = lastPainted.get(canvas);
   if (!painted) lastPainted.set(canvas, painted = new Map());
-  const paintedNow = new Map<string, HTMLImageElement>();
+  const paintedNow = new Map<string, PreviewImage>();
   for (const { node: f, rect: r, screenWidth: screenW } of items) {
     const x = r.x * cam.z + cam.x, y = r.y * cam.z + cam.y, sw = screenW, sh = r.h * cam.z;
     const url = thumbnailSource(f);
@@ -1002,7 +1026,11 @@ export function paintRaster(
     const current = sharper ?? (!box && url ? thumbnails?.get(url) ?? null : null);
     // A new revision's preview (after a source change) replaces the old one only once loaded,
     // instead of blanking the frame in between.
-    const img = current ?? (!box && url ? painted.get(f.id) ?? null : null);
+    const kept = current ?? (!box && url ? painted.get(f.id) ?? null : null);
+    // The cache closes a bitmap it evicts, even one kept here. A closed bitmap measures 0x0 and
+    // drawImage would throw on it, so it no longer counts as a preview.
+    const { width: imageW, height: imageH } = kept ? previewSize(kept) : { width: 0, height: 0 };
+    const img = imageW > 0 && imageH > 0 ? kept : null;
     if (img) paintedNow.set(f.id, img);
     const born = fx.appeared.get(f.id);
     const fresh = fx.reducedMotion || born === undefined ? 1 : Math.min(1, (fx.now - born) / MATERIALIZE_MS);
@@ -1012,9 +1040,9 @@ export function paintRaster(
     if (f.kind !== "image" || !img) ctx.fillRect(x, y, sw, sh);
     if (img) {
       // object-fit: cover, anchored to the top (matches the DOM layer).
-      const scale = sw / img.naturalWidth;
-      const srcH = Math.min(img.naturalHeight, sh / scale);
-      ctx.drawImage(img, 0, 0, img.naturalWidth, srcH, x, y, sw, srcH * scale);
+      const scale = sw / imageW;
+      const srcH = Math.min(imageH, sh / scale);
+      ctx.drawImage(img, 0, 0, imageW, srcH, x, y, sw, srcH * scale);
     }
     ctx.globalAlpha = 1;
     const ring = selected.has(f.id) ? COLORS.select : peers.get(f.id);

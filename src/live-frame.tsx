@@ -7,7 +7,8 @@ type Layer = { doc: string; key: number; ready: boolean; swap: boolean };
  * A live preview that swaps documents without blinking: the shown iframe stays until its
  * replacement has loaded and styled, so a source change never reveals the outdated
  * thumbnail underneath. Only the newest document carries the node id, which is how the
- * canvas routes its auto-height messages.
+ * canvas routes its auto-height messages. Pass `design` through `scopeDesign`: an edit to a component
+ * the document does not use then builds the same document, and nothing swaps.
  */
 export function LiveFrame({ id, html, design, width, height }: { id: string; html: string; design: DesignSystem; width: number; height: number }) {
   const doc = useMemo(() => frameDocument(html, { measure: true, base: location.origin, design }), [html, design]);

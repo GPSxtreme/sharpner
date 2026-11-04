@@ -14,7 +14,7 @@ type Props = {
 
 /**
  * One disposable executable document. Each mount is one session: the parent changes `key` to
- * restart (Reset, source, size or design changes) and unmounts it to stop.
+ * restart (Reset, or a change to the source, size, tokens or a component it uses) and unmounts it to stop.
  */
 export function InteractionFrame({ id, html, design, width, height, title, onStop }: Props) {
   // Props are fixed for the lifetime of a session; a change arrives as a new key.
