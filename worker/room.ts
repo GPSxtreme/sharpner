@@ -195,6 +195,30 @@ const MIGRATIONS = [
     sql.exec(`INSERT INTO meta (k, v) VALUES ('freeSections', ?)`, JSON.stringify(free));
     sql.exec(`UPDATE nodes SET layout = 'auto' WHERE kind = 'section'`);
   },
+  // Component specimens dropped their tag-and-props caption and most of their padding, so each preview is about
+  // the size of the component. Every component re-renders once to show and measure the compact specimen.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'compactSpecimens'`).toArray().length) return;
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('compactSpecimens', '1')`);
+    sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE kind = 'component'`);
+    sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
+  },
+  // Between two deploys on 4 Nov 2026 the compact-specimen migration briefly held slot 17, so files opened then recorded
+  // schema 17 without the free-section migration. It is guarded by its meta key, so this repeat is a no-op elsewhere.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'freeSections'`).toArray().length) return;
+    const free = sql.exec<{ id: string }>(`SELECT id FROM nodes WHERE kind = 'section' AND layout != 'auto'`).toArray().map((r) => r.id);
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('freeSections', ?)`, JSON.stringify(free));
+    sql.exec(`UPDATE nodes SET layout = 'auto' WHERE kind = 'section'`);
+  },
+  // A release without compact specimens ran for about 12 minutes on 4 Nov 2026 and rendered some component previews
+  // with the old caption at their current revision. Every component re-renders once more with the compact specimen.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'compactSpecimensAgain'`).toArray().length) return;
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('compactSpecimensAgain', '1')`);
+    sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE kind = 'component'`);
+    sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
+  },
 ];
 
 /** Files whose owner asked for every screen in dark; see the migration that uses it. */

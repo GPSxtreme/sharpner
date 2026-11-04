@@ -85,11 +85,20 @@ export const CATALOG_PAD = 64;
 export const CATALOG_GAP = 40;
 export const CATALOG_ROW_GAP = 64;
 export const CATALOG_ROW_WIDTH = 1600;
-export const CATALOG_GUTTER = 160;
+/** Wide enough that a 12px family name of about 12 characters fits at the smallest zoom that shows catalog labels. */
+export const CATALOG_GUTTER = 240;
 /** Catalogs taller than this multiple of their width split their family rows into columns; shorter ones keep one. */
 export const CATALOG_TALL = 1.5;
 /** Space between catalog columns. The next column's gutter holds its family names, so this only clears the specimens. */
 export const CATALOG_COLUMN_GAP = AUTO_GAP;
+/**
+ * A family table is a ruled box. Its header row holds the column names; its first column, the catalog gutter, holds
+ * the row names. Each cell keeps this much space to the rules around it: half the catalog gap across, less down,
+ * since no label sits between rows.
+ */
+export const TABLE_HEAD = 48;
+export const TABLE_PAD_X = CATALOG_GAP / 2;
+export const TABLE_PAD_Y = 16;
 const EMPTY_SECTION = { w: 480, h: 280 };
 
 /** Height used for layout: fixed, else what a live iframe reported, else the renderer's measurement. */
@@ -216,17 +225,68 @@ const inOrder = (frames: readonly CanvasNode[]) => {
 };
 
 /**
+ * Row and column of a variant named `Family/Row/Column`, such as `Button/Secondary/Large`. Further parts belong to
+ * the column. Null for a name with fewer parts.
+ */
+export function tableCell(name: string) {
+  const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 3 ? { row: parts[1]!, column: parts.slice(2).join(" / ") } : null;
+}
+
+type FamilyRun = { start: number; end: number; table: { rows: string[]; columns: string[]; cells: { row: number; column: number }[] } | null };
+
+/**
+ * Consecutive catalog members of one family. A family is a table when every member names a row and a column and
+ * no two share a cell; rows and columns keep the order of their first member.
+ */
+function familyRuns(names: readonly string[]): FamilyRun[] {
+  const runs: FamilyRun[] = [];
+  for (let start = 0; start < names.length;) {
+    const family = familyOf(names[start]!);
+    let end = start + 1;
+    while (end < names.length && familyOf(names[end]!) === family) end++;
+    const rows: string[] = [], columns: string[] = [], cells: { row: number; column: number }[] = [], taken = new Set<string>();
+    let table = end - start > 1;
+    for (let i = start; table && i < end; i++) {
+      const cell = tableCell(names[i]!);
+      if (!cell || taken.has(`${cell.row}\0${cell.column}`)) { table = false; break; }
+      taken.add(`${cell.row}\0${cell.column}`);
+      if (!rows.includes(cell.row)) rows.push(cell.row);
+      if (!columns.includes(cell.column)) columns.push(cell.column);
+      cells.push({ row: rows.indexOf(cell.row), column: columns.indexOf(cell.column) });
+    }
+    runs.push({ start, end, table: table ? { rows, columns, cells } : null });
+    start = end;
+  }
+  return runs;
+}
+
+/**
  * Offsets inside a catalog's padding. Each component family ("Chip" in "Chip/Active") is a block that starts its
- * own row and wraps at the row width, with its name in a gutter to the left. A catalog much taller than wide stacks
- * these blocks in columns instead, so a long Design System grows as wide as it is tall. Columns keep family order,
- * top to bottom then left to right, and split where their heights balance.
+ * own row and wraps at the row width, with its name in a gutter to the left. A family named `Family/Row/Column` is
+ * a table instead: a header row, then one row per row name and one column per column name, each cell left aligned and
+ * vertically centred. The table's box starts at the gutter, which holds its row names.
+ * A catalog much taller than wide stacks these blocks in columns instead, so a long Design System grows as wide as
+ * it is tall. Columns keep family order, top to bottom then left to right, and split where their heights balance.
  */
 export function catalogLayout(names: readonly string[], sizes: readonly { w: number; h: number }[], gutter: number) {
   const blocks: { offsets: { x: number; y: number }[]; w: number; h: number }[] = [];
-  for (let i = 0; i < sizes.length;) {
-    const start = i, family = familyOf(names[i]!), offsets: { x: number; y: number }[] = [];
+  for (const { start, end, table } of familyRuns(names)) {
+    const offsets: { x: number; y: number }[] = [];
+    if (table) {
+      const widths = table.columns.map(() => 0), heights = table.rows.map(() => 0);
+      table.cells.forEach(({ row, column }, k) => {
+        const s = sizes[start + k]!;
+        widths[column] = Math.max(widths[column]!, s.w);
+        heights[row] = Math.max(heights[row]!, s.h);
+      });
+      const xs = positions(widths, TABLE_PAD_X * 2), ys = positions(heights, TABLE_PAD_Y * 2), top = TABLE_HEAD + TABLE_PAD_Y;
+      table.cells.forEach(({ row, column }, k) => offsets.push({ x: xs[column]!, y: top + ys[row]! + (heights[row]! - sizes[start + k]!.h) / 2 }));
+      blocks.push({ offsets, w: xs.at(-1)! + widths.at(-1)! + TABLE_PAD_X, h: top + ys.at(-1)! + heights.at(-1)! + TABLE_PAD_Y });
+      continue;
+    }
     let x = 0, y = 0, rowHeight = 0, w = 0;
-    for (; i < sizes.length && (i === start || familyOf(names[i]!) === family); i++) {
+    for (let i = start; i < end; i++) {
       const s = sizes[i]!;
       if (x && x + s.w > CATALOG_ROW_WIDTH) { y += rowHeight + CATALOG_ROW_GAP; x = 0; rowHeight = 0; }
       offsets.push({ x, y });
@@ -257,6 +317,14 @@ export function catalogLayout(names: readonly string[], sizes: readonly { w: num
   }
   return best;
 }
+
+/** Where each of a run of lengths starts when they sit `gap` apart. */
+const positions = (lengths: readonly number[], gap: number) => {
+  const out: number[] = [];
+  let at = 0;
+  for (const length of lengths) { out.push(at); at += length + gap; }
+  return out;
+};
 
 /**
  * First index of each of `columns` contiguous runs of `heights`, chosen so the tallest run (with gaps between
@@ -297,19 +365,57 @@ export function catalogSectionIds(frames: CanvasNode[]) {
   return ids;
 }
 
-/** Where each catalog family's name goes: the gutter beside its first specimen, in whichever column it landed. */
-export function catalogFamilyLabels(frames: CanvasNode[], rects: ReadonlyMap<string, Rect>, catalogs: ReadonlySet<string>) {
-  const labels: { family: string; x: number; y: number }[] = [];
+/**
+ * Text the canvas draws in a catalog rather than above each specimen. A family name heads its block: in the gutter
+ * beside a row of variants, or above a table's box. A table centres each column name in its header row and each
+ * row name in the gutter beside its row. `w` is the room the text may take; `row` and `column` text is centred on `y`.
+ */
+export type CatalogLabel = { kind: "family" | "row" | "column"; text: string; x: number; y: number; w: number };
+
+/** A family table's box, the y of the rule under its header and of each rule between rows, and the x of each rule between columns. */
+export type CatalogTable = Rect & { head: number; rows: number[]; columns: number[] };
+
+/** Catalog labels and table rules, plus the specimens inside tables, whose headers name them in place of their own labels. */
+export function catalogLabels(frames: CanvasNode[], rects: ReadonlyMap<string, Rect>, catalogs: ReadonlySet<string>) {
+  const labels: CatalogLabel[] = [], tables: CatalogTable[] = [], cells = new Set<string>();
   const kids = childrenOf(frames), ordered = inOrder(frames);
   for (const id of catalogs) {
     if (!rects.has(id)) continue;
-    const placed = ordered(kids.get(id) ?? []).filter((node) => rects.has(node.id));
-    placed.forEach((node, i) => {
-      const family = familyOf(node.name), rect = rects.get(node.id)!;
-      if (family && family !== familyOf(placed[i - 1]?.name ?? "")) labels.push({ family, x: rect.x - CATALOG_GUTTER, y: rect.y });
-    });
+    const members = ordered(kids.get(id) ?? []);
+    for (const { start, end, table } of familyRuns(members.map((node) => node.name))) {
+      const placed = members.slice(start, end).flatMap((node, k) => rects.has(node.id) ? [{ node, rect: rects.get(node.id)!, cell: table?.cells[k] }] : []);
+      const family = familyOf(placed[0]?.node.name ?? "");
+      if (!placed.length) continue;
+      const left = Math.min(...placed.map((p) => p.rect.x));
+      if (!table) {
+        if (family) labels.push({ kind: "family", text: family, x: left - CATALOG_GUTTER, y: Math.min(...placed.map((p) => p.rect.y)), w: CATALOG_GUTTER - 24 });
+        continue;
+      }
+      for (const p of placed) cells.add(p.node.id);
+      // A row's tallest cell and a column's widest one sit on its edges, so placed cells give the exact grid.
+      const span = (count: number, pick: (cell: { row: number; column: number }) => number, lo: (r: Rect) => number, hi: (r: Rect) => number) =>
+        Array.from({ length: count }, (_, i) => {
+          const inside = placed.filter((p) => pick(p.cell!) === i).map((p) => p.rect);
+          return inside.length ? { lo: Math.min(...inside.map(lo)), hi: Math.max(...inside.map(hi)) } : null;
+        });
+      const rows = span(table.rows.length, (c) => c.row, (r) => r.y, (r) => r.y + r.h).filter((r) => r !== null);
+      const columns = span(table.columns.length, (c) => c.column, (r) => r.x, (r) => r.x + r.w);
+      const shown = columns.filter((c) => c !== null);
+      const head = rows[0]!.lo - TABLE_PAD_Y, x = left - CATALOG_GUTTER, y = head - TABLE_HEAD;
+      const right = shown.at(-1)!.hi + TABLE_PAD_X, bottom = rows.at(-1)!.hi + TABLE_PAD_Y;
+      tables.push({
+        x, y, w: right - x, h: bottom - y, head,
+        rows: rows.slice(1).map((r, i) => (rows[i]!.hi + r.lo) / 2),
+        columns: [left - TABLE_PAD_X, ...shown.slice(1).map((c, i) => (shown[i]!.hi + c.lo) / 2)],
+      });
+      labels.push({ kind: "family", text: family, x, y, w: right - x });
+      columns.forEach((c, i) => { if (c) labels.push({ kind: "column", text: table.columns[i]!, x: c.lo, y: y + TABLE_HEAD / 2, w: c.hi - c.lo + TABLE_PAD_X }); });
+      span(table.rows.length, (c) => c.row, (r) => r.y, (r) => r.y + r.h).forEach((r, i) => {
+        if (r) labels.push({ kind: "row", text: table.rows[i]!, x: x + TABLE_PAD_X, y: (r.lo + r.hi) / 2, w: CATALOG_GUTTER - TABLE_PAD_X * 3 });
+      });
+    }
   }
-  return labels;
+  return { labels, tables, cells };
 }
 
 export function childrenOf(frames: CanvasNode[]) {

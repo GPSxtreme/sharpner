@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { catalogFamilyLabels, catalogSectionIds, layoutRects, union } from "../shared/layout";
+import { catalogLabels, catalogSectionIds, layoutRects, union } from "../shared/layout";
 import type { CanvasNode, CommentThread, ServerMsg } from "../shared/types";
 import { CanvasLayout } from "./canvas-layout";
 import { Room } from "./room";
@@ -89,7 +89,10 @@ describe.skipIf(import.meta.env.MODE !== "stress")("canvas layout stress", () =>
         expect(actual.rects).toEqual(expected);
         expect(actual.bounds).toEqual(union([...expected.values()]));
         expect(actual.catalogs).toEqual(catalogs);
-        expect(actual.families).toEqual(catalogFamilyLabels(frames, expected, catalogs));
+        const { labels, tables, cells } = catalogLabels(frames, expected, catalogs);
+        expect(actual.labels).toEqual(labels);
+        expect(actual.tables).toEqual(tables);
+        expect(actual.tableCells).toEqual(cells);
       }
     }
   }, 30_000);

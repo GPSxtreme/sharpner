@@ -252,12 +252,12 @@ describe("cached canvas layout", () => {
     const socket = start([node("catalog", { kind: "section", height: null }), node("button", { kind: "component", name: "Button/Primary", parentId: "catalog", width: 180, height: 40 })]);
     const layout = new CanvasLayout(room);
     expect(layout.page("page_one").catalogs.has("catalog")).toBe(true);
-    expect(layout.page("page_one").families.map((label) => label.family)).toEqual(["Button"]);
+    expect(layout.page("page_one").labels.map((label) => label.text)).toEqual(["Button"]);
     synced(socket, "button", { name: "Input/Text" });
-    expect(layout.page("page_one").families.map((label) => label.family)).toEqual(["Input"]);
+    expect(layout.page("page_one").labels.map((label) => label.text)).toEqual(["Input"]);
     synced(socket, "button", { kind: "frame", parentId: null });
     expect(layout.page("page_one").catalogs.size).toBe(0);
-    expect(layout.page("page_one").families).toEqual([]);
+    expect(layout.page("page_one").labels).toEqual([]);
     synced(socket, "catalog", { kind: "frame", width: 200, height: 300 });
     expect(layout.page("page_one").sections).toHaveLength(0);
     expect(layout.page("page_one").nodes).toHaveLength(2);

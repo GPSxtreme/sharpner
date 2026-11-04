@@ -1,4 +1,4 @@
-import { catalogFamilyLabels, catalogSectionIds, layoutRects, union } from "../shared/layout";
+import { catalogLabels, catalogSectionIds, layoutRects, union } from "../shared/layout";
 import { commentPoint } from "../shared/comments";
 import { canvasNavigation } from "./canvas-navigation";
 import type { Room } from "./room";
@@ -7,11 +7,11 @@ function pageGeometry(room: Room, pageId: string) {
   const frames = room.pageNodes(pageId);
   const rects = layoutRects(frames, (node) => room.heightOf(node));
   const catalogs = catalogSectionIds(frames);
+  const { labels, tables, cells } = catalogLabels(frames, rects, catalogs);
   return {
-    frames, rects, catalogs,
+    frames, rects, catalogs, labels, tables, tableCells: cells,
     sections: frames.filter((node) => node.kind === "section"),
     nodes: frames.filter((node) => node.kind !== "section"),
-    families: catalogFamilyLabels(frames, rects, catalogs),
     bounds: rects.size ? union([...rects.values()]) : null,
   };
 }

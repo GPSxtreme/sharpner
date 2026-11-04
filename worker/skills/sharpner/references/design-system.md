@@ -14,7 +14,7 @@ Use the same three ordinary sections across files, in this order. Add nodes with
 
 1. **01 · Brand:** one editable HTML frame with the brand name, image logo, one short guidelines paragraph and a few voice bullets. Use the file's tokens and keep it readable at a useful canvas zoom. Keep the corresponding file metadata in `set_brand({ fileId, name, logoUrl, guidelines, voice })` aligned with the frame; changing metadata does not rewrite the frame. Omitted metadata fields stay unchanged; empty strings/arrays clear them. Use `upload_image` for a permanent logo URL. `get_design_system` returns Brand and the marked page ID.
 2. **02 · Foundations:** place the file's token sheets here. Their existing canvas previews show colors by theme, then typography, spacing, radii and shadows. Recommended semantic color slots come first, with CSS comments as descriptions or utility classes as fallbacks. Show only defined tokens. Preserve existing brand-specific token names; alias recommended slots to their brand values with `var(...)`. Do not duplicate token values in hand-written swatch boards.
-3. **03 · Primitive components:** keep only component definitions in this automatic section. The canvas gives each family a row and one label, wraps long rows, and stacks families in columns once the catalog grows much taller than wide, so every Design System page keeps a similar, roughly square shape. Name variants `Family/Variant`; keep each family's variants contiguous using `order`. Follow the recommended family list below first, then the file's own families. Treat `Radio/*` as Radio Group and `Tab/*` as Tabs when ordering; do not rename existing tags just to match the list. Give previews useful widths and omit fixed height so content and captions fit. Keep guidelines, token sheets and product compositions out of this catalog.
+3. **03 · Primitive components:** keep only component definitions in this automatic section. The canvas gives each family a row and one label, wraps long rows, and stacks families in columns once the catalog grows much taller than wide, so every Design System page keeps a similar, roughly square shape. Name variants `Family/Variant`. To show a family as a table, name every variant `Family/Row/Column`, such as `Button/Secondary/Large`; the canvas draws row and column headers. Keep interaction states (hover, focus, pressed, disabled) out of names: a state board is a frame of instances. Keep each family's variants contiguous using `order`; rows and columns follow that order. Follow the recommended family list below first, then the file's own families. Treat `Radio/*` as Radio Group and `Tab/*` as Tabs when ordering; do not rename existing tags just to match the list. Previews show only the default instance with a little padding. Set each width close to the component's own width and omit fixed height. Keep guidelines, token sheets and product compositions out of this catalog.
 
 Components on the marked Design System page are registered primitives. Agents add them with `create_nodes` on that page or move definitions there with `update_nodes`. The canvas keeps its normal pan, zoom, selection, comments and preview behavior; no separate document view or interaction controls are needed. Previews render exactly the authored HTML; Sharpner keeps its own app theme.
 
@@ -46,7 +46,7 @@ Tags apply across the file. Prefix feature component names, such as `Trade/Order
 
 A library exports all its own tokens and components, regardless of page. Use a separate file for shared foundations and primitives. Libraries do not export their linked library's definitions. Local definitions override library definitions.
 
-Sections with only components form catalogs with one row per family, such as Chip in `Chip/Active`, arranged in columns when the catalog is tall. Keep variants together. Use `order` to change sequence. Keep screens and token sheets outside component catalogs. The main skill describes layout.
+Sections with only components form catalogs with one row per family, such as Chip in `Chip/Active`, or one table per family named `Family/Row/Column`, arranged in columns when the catalog is tall. Keep variants together. Use `order` to change sequence. Keep screens and token sheets outside component catalogs. The main skill describes layout.
 
 ## Define tokens
 
@@ -137,7 +137,7 @@ Create a `kind: "component"` node with HTML in `source`. Its name sets the tag: 
 - Make components dynamic. Express interaction states on the same component with Tailwind variants, such as `hover:`, `focus-visible:`, `active:`, `disabled:`, `aria-invalid:`, `aria-selected:` and `data-[state=open]:`, so instances respond when people use them.
 - Do not create a component per state, such as `Button/Default focus` or `Input/Invalid`. Expose states that callers set as props on real attributes, such as `aria-invalid="{{invalid|false}}"` or `data-state="{{state|closed}}"`, and style them with matching variants.
 - Keep variants separate from states: `Button/Ghost` is a variant; hover, focus, disabled and error are states of every variant.
-- Set a suitable preview width. Omit height so content and captions fit.
+- Set the preview width close to the component's own width. Omit height so the content fits.
 
 ```html
 <main class="bg-background text-foreground">
@@ -146,7 +146,7 @@ Create a `kind: "component"` node with HTML in `source`. Its name sets the tag: 
 </main>
 ```
 
-Component previews add tag and prop captions. Instances in screens use the original HTML without captions. Token sheets show foundation previews: theme swatches, typography, spacing, radii, and shadows.
+Component previews show only the default instance. The canvas marks them as components; `get_design_system` reports tags and props. Instances in screens use the original HTML. Token sheets show foundation previews: theme swatches, typography, spacing, radii, and shadows.
 
 ## Use themes
 

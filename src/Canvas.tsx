@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { AUTO_ROW_GAP, CATALOG_GUTTER, CATALOG_ROW_GAP, contains, familyOf, type Rect } from "../shared/layout";
+import { AUTO_ROW_GAP, CATALOG_ROW_GAP, contains, familyOf, TABLE_HEAD, TABLE_PAD_Y, type CatalogLabel, type CatalogTable, type Rect } from "../shared/layout";
 import { previewCurrent, renderedHtml, type CanvasNode, type CommentAnchor, type CommentThread, type DesignSystem } from "../shared/types";
 import { commentPoint } from "../shared/comments";
 import { scopeDesign } from "../shared/component-scope";
@@ -125,7 +125,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
   useEffect(() => () => reportMarquee.current?.(null), []);
 
   const layout = useMemo(() => new CanvasLayout(room), [room]);
-  const { frames, rects, catalogs, sections, nodes, families } = layout.page(pageId);
+  const { frames, rects, catalogs, sections, nodes, labels: catalogLabels, tables: catalogTables, tableCells } = layout.page(pageId);
   const rectOf = (f: CanvasNode) => rects.get(f.id)!;
   const { navigationRects, navigation } = layout.navigation(pageId, size, activeCommentId);
   const navigationRef = useRef(navigation);
@@ -531,7 +531,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
   useLayoutEffect(() => {
     if (rasterRef.current) {
       paintRaster(rasterRef.current, size, cam, visibleSections, rasterFrames, selected, peerSelections, catalogs,
-        families, { agent: room.agentActivity, done: room.agentDone, appeared: room.appeared, now: performance.now(), reducedMotion }, thumbnailCache.current,
+        { labels: catalogLabels, tables: catalogTables, cells: tableCells }, { agent: room.agentActivity, done: room.agentDone, appeared: room.appeared, now: performance.now(), reducedMotion }, thumbnailCache.current,
         { cache: highPreviewCache.current, enabled: prefetchPreviews, settled });
     }
   });
@@ -570,7 +570,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
             <FrameNode
               key={f.id}
               frame={f}
-              label={nodeLabel(f, catalogs)}
+              label={nodeLabel(f, catalogs, tableCells)}
               catalog={catalogs.has(f.parentId ?? "")}
               x={r.x}
               y={r.y}
@@ -655,7 +655,7 @@ export function Canvas({ room, fileId, pageId, selection, selectionFocus, onSele
 
 type FrameNodeProps = {
   frame: CanvasNode;
-  label: string;
+  label: string | null;
   /** Sits in a catalog section, whose tighter rows hide labels sooner. */
   catalog: boolean;
   x: number;
@@ -705,7 +705,7 @@ const FrameNode = memo(function FrameNode({ frame: f, label, catalog, x, y, heig
       data-frame={f.id}
       style={{ left: x, top: y, width: f.width, height, ["--peer" as string]: peerColor }}
     >
-      <div className="frame-label">{label}</div>
+      {label && <div className="frame-label">{label}</div>}
       {agent && <div className="agent-chip"><span className="aperture" />{agent}</div>}
       <div className="frame-body">
         {lo && <img ref={top === lo ? topImage : undefined} src={lo} alt="" draggable={false} decoding="async" onLoad={top === lo ? () => setHandoff(false) : undefined} />}
@@ -787,13 +787,17 @@ function Trace({ doneAt }: { doneAt: number | undefined }) {
 
 const COLORS = {
   select: "oklch(0.72 0.14 275)", accent: "oklch(0.82 0.17 78)", muted: "#aca397", box: "#24201c", edge: "rgba(255,240,215,0.08)",
-  component: "#c084fc", tokens: "#f9a8d4", section: "rgba(255,236,200,0.035)", sectionEdge: "rgba(255,240,215,0.08)", sectionText: "#dcd7cf",
+  component: "#c084fc", componentEdge: "rgba(192,132,252,0.6)", tableRule: "rgba(255,240,215,0.14)", tokens: "#f9a8d4", section: "rgba(255,236,200,0.035)", sectionEdge: "rgba(255,240,215,0.08)", sectionText: "#dcd7cf",
   placeholder: "#171412",
 };
 const KIND_PREFIX: Record<CanvasNode["kind"], string> = { frame: "", image: "", section: "", component: "◆ ", tokens: "◎ " };
 
-/** Catalog rows already name the family in their gutter, so specimens show only their variant. */
-function nodeLabel(f: CanvasNode, catalogs: ReadonlySet<string>) {
+/**
+ * Catalog rows already name the family in their gutter, so specimens show only their variant. A table's headers
+ * name its cells, so they have no label of their own.
+ */
+function nodeLabel(f: CanvasNode, catalogs: ReadonlySet<string>, cells: ReadonlySet<string>) {
+  if (cells.has(f.id)) return null;
   const name = catalogs.has(f.parentId ?? "") && familyOf(f.name) ? componentName(f.name).variant : f.name;
   return KIND_PREFIX[f.kind] + name;
 }
@@ -814,7 +818,7 @@ export function paintRaster(
   selected: Set<string>,
   peers: Map<string, string>,
   catalogs: ReadonlySet<string>,
-  families: { family: string; x: number; y: number }[],
+  catalog: { labels: CatalogLabel[]; tables: CatalogTable[]; cells: ReadonlySet<string> },
   fx: { agent: Map<string, unknown>; done: Map<string, number>; appeared: Map<string, number>; now: number; reducedMotion: boolean },
   thumbnails: ThumbnailCache | null,
   upgrades?: { cache: ThumbnailCache | null; enabled: boolean; settled: boolean },
@@ -874,6 +878,32 @@ export function paintRaster(
     ctx.stroke();
   }
 
+  // Family tables: dashed rules in the gaps between cells, under their specimens. Inner rules give way once
+  // they would crowd the cells; the box stays.
+  if (catalog.tables.length) {
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = COLORS.tableRule;
+  }
+  for (const t of catalog.tables) {
+    const x = t.x * cam.z + cam.x, y = t.y * cam.z + cam.y, w = t.w * cam.z, h = t.h * cam.z;
+    if (x > size.w || y > size.h || x + w < 0 || y + h < 0) continue;
+    ctx.beginPath();
+    ctx.roundRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h), Math.min(12, 16 * cam.z));
+    if (TABLE_PAD_Y * cam.z >= 4) {
+      for (const ry of [t.head, ...t.rows]) {
+        const sy = Math.round(ry * cam.z + cam.y) + 0.5;
+        ctx.moveTo(x, sy); ctx.lineTo(x + w, sy);
+      }
+      for (const cx of t.columns) {
+        const sx = Math.round(cx * cam.z + cam.x) + 0.5;
+        ctx.moveTo(sx, y); ctx.lineTo(sx, y + h);
+      }
+    }
+    ctx.stroke();
+  }
+  if (catalog.tables.length) ctx.setLineDash([]);
+
   ctx.font = LABEL_FONT.node;
   const nodeBaseline = labelBaseline(ctx);
   let painted = lastPainted.get(canvas);
@@ -907,8 +937,9 @@ export function paintRaster(
     }
     ctx.globalAlpha = 1;
     const ring = selected.has(f.id) ? COLORS.select : peers.get(f.id);
-    if (ring || !box) {
-      ctx.strokeStyle = ring ?? COLORS.edge;
+    // Components keep a purple edge, so they read as definitions rather than screens at any zoom.
+    if (ring || !box || f.kind === "component") {
+      ctx.strokeStyle = ring ?? (f.kind === "component" ? COLORS.componentEdge : COLORS.edge);
       ctx.lineWidth = ring ? 2 : 1;
       ctx.strokeRect(x - 0.5, y - 0.5, sw + 1, sh + 1);
     }
@@ -918,24 +949,31 @@ export function paintRaster(
     }
     const doneAt = fx.done.get(f.id);
     if (!fx.reducedMotion && doneAt !== undefined) traceClose(ctx, x, y, sw, sh, fx.now, doneAt);
-    if (sw >= 60 && (!f.parentId || labelsFit(catalogs.has(f.parentId) ? CATALOG_ROW_GAP : AUTO_ROW_GAP, cam.z))) {
+    const label = nodeLabel(f, catalogs, catalog.cells);
+    if (label && sw >= 60 && (!f.parentId || labelsFit(catalogs.has(f.parentId) ? CATALOG_ROW_GAP : AUTO_ROW_GAP, cam.z))) {
       ctx.fillStyle = selected.has(f.id) ? COLORS.select : f.kind === "component" ? COLORS.component : f.kind === "tokens" ? COLORS.tokens : COLORS.muted;
-      ctx.fillText(fitLabel(ctx, nodeLabel(f, catalogs), sw), x, y - nodeBaseline);
+      ctx.fillText(fitLabel(ctx, label, sw), x, y - nodeBaseline);
     }
   }
 
   lastPainted.set(canvas, paintedNow);
 
-  // Family names head their catalog row in the gutter, on the same line as the variant labels beside them.
-  const gutter = (CATALOG_GUTTER - 24) * cam.z;
-  if (gutter >= 48 && labelsFit(CATALOG_ROW_GAP, cam.z)) {
-    ctx.font = LABEL_FONT.family;
-    const baseline = labelBaseline(ctx);
-    ctx.fillStyle = COLORS.sectionText;
-    for (const { family, x, y } of families) {
+  // Family names head their catalog block in the gutter, on the same line as the variant labels or table column
+  // headers beside them. Table row names sit in the gutter, centred on their row.
+  if (labelsFit(CATALOG_ROW_GAP, cam.z)) {
+    for (const { kind, text, x, y, w } of catalog.labels) {
+      if (kind !== "family" && !labelsFit(TABLE_HEAD, cam.z)) continue;
+      const room = w * cam.z;
+      if (room < (kind === "column" ? 32 : 48)) continue;
       const sx = x * cam.z + cam.x, sy = y * cam.z + cam.y;
-      if (sy < 0 || sy - LABEL_ROOM > size.h || sx > size.w || sx + gutter < 0) continue;
-      ctx.fillText(fitLabel(ctx, family, gutter), sx, sy - baseline);
+      if (sy + LABEL_ROOM < 0 || sy - LABEL_ROOM > size.h || sx > size.w || sx + room < 0) continue;
+      ctx.font = kind === "family" ? LABEL_FONT.family : LABEL_FONT.node;
+      ctx.fillStyle = kind === "family" ? COLORS.sectionText : COLORS.muted;
+      if (kind !== "family") {
+        ctx.textBaseline = "middle";
+        ctx.fillText(fitLabel(ctx, text, room), sx, sy);
+        ctx.textBaseline = "alphabetic";
+      } else ctx.fillText(fitLabel(ctx, text, room), sx, sy - labelBaseline(ctx));
     }
   }
 

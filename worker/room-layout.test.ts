@@ -75,9 +75,9 @@ describe("persisted automatic layout", () => {
     expect(room.node("legacy-screen")).toMatchObject({ x: 1000, y: 1200 });
     expect(rects().get("legacy-section")).toMatchObject({ x: 0, y: 0 });
     expect(rects().get("legacy-screen")).toMatchObject({ x: SECTION_PAD, y: SECTION_PAD });
-    // Three specimen refreshes: the old card presentation, dark specimens, then standards-mode measurement.
-    expect(room.node("component")!.rev).toBe(4);
-    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "17" });
+    // Five specimen refreshes: the old card presentation, dark specimens, standards-mode measurement, then compact specimens twice.
+    expect(room.node("component")!.rev).toBe(6);
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "20" });
   });
 
   it("refreshes cached token previews once for named themes without rerendering screens or components", () => {
@@ -120,6 +120,18 @@ describe("persisted automatic layout", () => {
     db.exec(`UPDATE meta SET v = '16' WHERE k = 'schema';`);
     wake();
     expect(db.prepare("SELECT v FROM meta WHERE k = 'freeSections'").get()).toEqual({ v: '["dark","light"]' });
+  });
+
+  it("makes free sections automatic in a file that recorded schema 17 while the compact-specimen migration held that slot", () => {
+    const { db, wake, put } = fixture();
+    put("dark", { kind: "section" });
+    // A deploy briefly ran compact specimens as migration 17, so these files recorded 17 without the free-section pass.
+    db.exec(`UPDATE nodes SET layout = 'free' WHERE kind = 'section';
+      DELETE FROM meta WHERE k = 'freeSections'; INSERT OR REPLACE INTO meta (k, v) VALUES ('compactSpecimens', '1');
+      UPDATE meta SET v = '17' WHERE k = 'schema';`);
+    wake();
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'freeSections'").get()).toEqual({ v: '["dark"]' });
+    expect(db.prepare("SELECT DISTINCT layout FROM nodes WHERE kind = 'section'").all()).toEqual([{ layout: "auto" }]);
   });
 
   it("moves a screen out of its section into the page's arrangement without storing a position", () => {
