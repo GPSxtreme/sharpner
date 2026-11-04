@@ -136,6 +136,8 @@ function EditorInner({ room, meta, user, onChange, onShare, readOnly = false }: 
   const desktop = useDesktop();
   const { file, workspace } = meta;
   const { pageId, selection: liveSelection, selectionFocus, selectPage, selectNodes } = useCanvasLocation(file.id, room);
+  // A marquee commits to the URL on release; until then the selection toolbar follows what it covers.
+  const [marqueeSelection, setMarqueeSelection] = useState<string[] | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [open, setOpen] = useState<"pages" | "file" | "share" | "people" | null>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
@@ -221,7 +223,7 @@ function EditorInner({ room, meta, user, onChange, onShare, readOnly = false }: 
   const openComments = [...room.comments.values()].filter((t) => t.resolvedAt === null).length;
   const counts = new Map<string, number>();
   for (const n of room.nodes.values()) if (n.kind !== "section") counts.set(n.pageId, (counts.get(n.pageId) ?? 0) + 1);
-  const selected = liveSelection.map((id) => room.nodes.get(id)!);
+  const selected = (marqueeSelection ?? liveSelection).flatMap((id) => room.nodes.get(id) ?? []);
   const coverCandidate = selected.length === 1 && (selected[0]!.kind === "frame" || selected[0]!.kind === "image") ? selected[0]! : null;
   const playable = selected.length === 1 && canInteract(selected[0]) ? selected[0]! : null;
   const status = room.status === "open" ? "Live" : room.status === "connecting" ? "Connecting" : "Reconnecting";
@@ -245,7 +247,7 @@ function EditorInner({ room, meta, user, onChange, onShare, readOnly = false }: 
     <div className="editor" ref={trackKeyboardInset}>
       <main className={cn("stage", !readOnly && commentsOpen && !commentMode && "comments-open")}>
         {page ? (
-          <Canvas key={page.id} room={room} fileId={file.id} pageId={page.id} selection={liveSelection} selectionFocus={selectionFocus} onSelect={selectNodes} readOnly={readOnly}
+          <Canvas key={page.id} room={room} fileId={file.id} pageId={page.id} selection={liveSelection} selectionFocus={selectionFocus} onSelect={selectNodes} onMarqueeSelection={setMarqueeSelection} readOnly={readOnly}
             interactionId={playbackValid ? interactionId : null} onInteract={setInteractionId}
             commentMode={commentMode} activeCommentId={activeCommentId} commentFocus={commentFocus} onOpenComment={selectComment} draftComment={commentsOpen ? draftComment : null}
             onPlaceComment={(anchor) => { setDraftComment(anchor); setActiveCommentId(null); setCommentMode(false); setCommentsOpen(true); }} />

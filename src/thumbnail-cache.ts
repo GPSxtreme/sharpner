@@ -1,6 +1,8 @@
 export type ThumbnailRequest = { url: string; priority: number; pixels?: number };
+/** A decoded preview: a bitmap from a preview batch, or an image element loaded from its own URL. */
+export type PreviewImage = ImageBitmap | HTMLImageElement;
 type Status = "queued" | "loading" | "ready" | "error";
-type Entry = { url: string; status: Status; image: HTMLImageElement | null; pixels: number; used: number; retryAt: number; cancel?: () => void };
+type Entry = { url: string; status: Status; image: PreviewImage | null; pixels: number; used: number; retryAt: number; cancel?: () => void };
 type Knowledge = { pixels: number; retryAt: number };
 type Options = {
   maxEntries?: number;
@@ -8,11 +10,17 @@ type Options = {
   maxConcurrent?: number;
   createImage?: () => HTMLImageElement;
   now?: () => number;
-  loadImage?: (image: HTMLImageElement, url: string) => () => void;
+  /** Loads `url` into `image`, or hands back an already decoded bitmap. Returns a cancel. */
+  loadImage?: (image: HTMLImageElement, url: string, decoded: (bitmap: ImageBitmap) => void) => () => void;
   prepareImages?: (urls: string[]) => void;
 };
 const DEFAULT_PIXELS = 256 * 256;
 const RETRY_MS = 30_000;
+
+/** A closed ImageBitmap measures 0x0, as does an image element whose source was released. */
+export function previewSize(image: PreviewImage) {
+  return "naturalWidth" in image ? { width: image.naturalWidth, height: image.naturalHeight } : { width: image.width, height: image.height };
+}
 
 /** Originals are a deliberate high-resolution promotion, never a low-resolution fallback. */
 export function thumbnailSource(node: { kind: string; thumbLo: string | null; thumbHi: string | null; src?: string | null }, high = false) {
@@ -66,7 +74,7 @@ export class ThumbnailCache {
 
   has(url: string) { return this.desired.has(url); }
 
-  get(url: string): HTMLImageElement | null {
+  get(url: string): PreviewImage | null {
     if (!this.desired.has(url)) return null;
     const entry = this.entries.get(url);
     if (entry?.status !== "ready") return null;
@@ -143,22 +151,39 @@ export class ThumbnailCache {
           const image = entry.image = this.makeImage();
           image.decoding = "async";
           image.fetchPriority = "low";
-          image.onload = () => this.settle(entry, true);
-          image.onerror = () => this.settle(entry, false);
-          entry.cancel = this.loadImage(image, entry.url);
-        } catch { this.settle(entry, false); }
+          image.onload = () => this.decodeElement(entry, image);
+          image.onerror = () => this.settle(entry, null);
+          entry.cancel = this.loadImage(image, entry.url, (bitmap) => this.settle(entry, bitmap));
+        } catch { this.settle(entry, null); }
       }
     } finally { this.pumping = false; }
   }
 
-  private settle(entry: Entry, loaded: boolean) {
-    if (this.disposed || this.entries.get(entry.url) !== entry || entry.status !== "loading") return;
+  /** Decode a loaded element before its first paint rather than inside drawImage. */
+  private decodeElement(entry: Entry, image: HTMLImageElement) {
+    image.onload = image.onerror = null;
+    // Best effort: a loaded image that will not decode early, or has no decode(), can still be drawn.
+    const decoding: Promise<void> | undefined = image.decode?.();
+    if (decoding) decoding.then(() => this.settle(entry, image), () => this.settle(entry, image));
+    else this.settle(entry, image);
+  }
+
+  private settle(entry: Entry, image: PreviewImage | null) {
+    if (this.disposed || this.entries.get(entry.url) !== entry || entry.status !== "loading") {
+      // Nothing will draw or release a bitmap that outlived its load.
+      if (image && !("naturalWidth" in image)) image.close();
+      return;
+    }
     this.active--;
-    const image = entry.image;
-    const pixels = (image?.naturalWidth ?? 0) * (image?.naturalHeight ?? 0);
-    if (loaded && Number.isFinite(pixels) && pixels > 0) {
+    if (image && image !== entry.image) {
+      // The loader decoded this preview itself, so the element it was offered stays unused.
+      if (entry.image && "naturalWidth" in entry.image) entry.image.onload = entry.image.onerror = null;
+      entry.image = image;
+    }
+    const { width, height } = image ? previewSize(image) : { width: 0, height: 0 };
+    const pixels = width * height;
+    if (image && Number.isFinite(pixels) && pixels > 0) {
       entry.status = "ready"; entry.pixels = pixels; entry.retryAt = 0;
-      if (image) image.onload = image.onerror = null;
     } else {
       entry.status = "error"; entry.retryAt = this.now() + RETRY_MS;
       this.release(entry);
@@ -172,12 +197,15 @@ export class ThumbnailCache {
 
   private release(entry: Entry) {
     if (entry.status === "loading") this.active--;
-    if (entry.image) {
-      entry.image.onload = entry.image.onerror = null;
-      entry.cancel?.();
-      entry.cancel = undefined;
-      entry.image.removeAttribute("src");
-      entry.image = null;
-    }
+    const image = entry.image;
+    if (!image) return;
+    entry.image = null;
+    const element = "naturalWidth" in image;
+    if (element) image.onload = image.onerror = null;
+    entry.cancel?.();
+    entry.cancel = undefined;
+    // An evicted bitmap frees its decoded pixels now, not at garbage collection.
+    if (element) image.removeAttribute("src");
+    else image.close();
   }
 }

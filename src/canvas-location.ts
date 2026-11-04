@@ -5,6 +5,13 @@ import { navigate, useLocation } from "./router";
 
 export type CanvasLocation = { pageId: string | null; selection: string[] };
 
+/** A request to fit nodes, from a link or history traversal. Canvas fits each request object once. */
+export type SelectionFocus = { ids: string[] };
+
+const NO_FOCUS: SelectionFocus = { ids: [] };
+/** Each request is a new object, so returning to a selection fits it again. Empty requests share one, so local selections leave the editor state alone. */
+export const selectionFocusFor = (ids: string[]): SelectionFocus => ids.length ? { ids } : NO_FOCUS;
+
 export function readCanvasLocation(search: string): CanvasLocation {
   const params = new URLSearchParams(search);
   return { pageId: params.get("page") || null, selection: [...new Set(params.getAll("node").filter(Boolean))] };
@@ -38,7 +45,7 @@ export function useCanvasLocation(fileId: string, room: Room) {
   const [savedPageId] = useState(() => localStorage.getItem(`sharpner:page:${fileId}`));
   const requested = readCanvasLocation(new URL(loc, location.origin).search);
   const view = resolveCanvasLocation(requested, room.pages, room.nodes, savedPageId);
-  const [selectionFocus, setSelectionFocus] = useState(() => ({ ids: requested.selection }));
+  const [selectionFocus, setSelectionFocus] = useState(() => selectionFocusFor(requested.selection));
   const observedLocation = useRef(loc);
   const ownNavigation = useRef<string | null>(null);
 
@@ -52,7 +59,7 @@ export function useCanvasLocation(fileId: string, room: Room) {
   useEffect(() => {
     if (observedLocation.current === loc) return;
     observedLocation.current = loc;
-    if (ownNavigation.current !== loc) setSelectionFocus({ ids: requested.selection });
+    if (ownNavigation.current !== loc) setSelectionFocus(selectionFocusFor(requested.selection));
     ownNavigation.current = null;
   }, [loc]);
 
@@ -62,7 +69,7 @@ export function useCanvasLocation(fileId: string, room: Room) {
   }, [loc, room.status, view.pageId, JSON.stringify(view.selection)]);
 
   return { ...view, selectionFocus,
-    selectPage: (pageId: string) => { setSelectionFocus({ ids: [] }); update({ pageId, selection: [] }); },
-    selectNodes: (selection: string[]) => { setSelectionFocus({ ids: [] }); update({ pageId: view.pageId, selection }, true); },
+    selectPage: (pageId: string) => { setSelectionFocus(NO_FOCUS); update({ pageId, selection: [] }); },
+    selectNodes: (selection: string[]) => { setSelectionFocus(NO_FOCUS); update({ pageId: view.pageId, selection }, true); },
   };
 }

@@ -21,9 +21,16 @@ input to one of them under a stricter policy, so there is no separate opt-in.
 - Reset recreates the initial document. Stop or Escape disposes it and returns
   keyboard focus to the canvas. The outer controls remain outside authored HTML.
   Escape is reserved for leaving playback.
-- Source, size and design-system changes recreate the document rather than
-  attempting to migrate arbitrary JavaScript state. Stale document messages are
-  rejected by iframe window and per-document token.
+- Source, size and token changes, and edits to a component the design uses,
+  recreate the document rather than attempting to migrate arbitrary JavaScript
+  state. An edit to a component the design does not use leaves the session
+  running: the playback document embeds only the components whose tags appear in
+  its HTML, including scripts and nested components (`scopeDesign` in
+  `shared/component-scope.ts`). The match is textual, so a tag inside a longer
+  word (`x-row` in `flex-row`) also counts. HTML that builds tag names at runtime, such as
+  `` `x-${name}` `` or `"x-" + name`, embeds every component and so restarts on
+  any component edit. Stale document messages are rejected by iframe window and
+  per-document token.
 - Clicked states, typed input and animation state never enter Room operations,
   canonical geometry or thumbnails. The iframe keeps the design's viewport;
   scrolling and transient height changes stay inside it. In particular it has
@@ -46,7 +53,8 @@ with live documents remains a separate performance improvement.
 trusted asset base, policy and small input/navigation bridge before authored
 bytes, including malformed full documents. The initial doctype preserves
 standards mode, and authored root/body attributes remain available. Components and
-tokens use the same renderer as previews and screenshots.
+tokens use the same renderer as previews and screenshots; only the set of embedded
+component definitions is narrowed to the ones the design uses.
 
 The iframe has an opaque origin. Its sandbox allows scripts and local form
 events; it does not allow same-origin access, popups, top navigation, downloads

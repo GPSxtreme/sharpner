@@ -18,14 +18,16 @@ edits and fan out changes.
 | `shared/design-system.ts` | Brand validation and token metadata for canvas specimens |
 | `src/Canvas.tsx` | Camera, gestures, selection, and canvas composition |
 | `src/canvas-location.ts` | URL-backed page and selection, deep-link resolution, and navigation history |
+| `src/canvas-marquee.ts` | Marquee area, the selection it covers, and when a drag commits it |
 | `src/canvas-layout.ts` | One active page's cached geometry, catalog labels, and navigation bounds |
 | `src/canvas-render-plan.ts` | Viewport culling, preview layers, and live-content budgets |
 | `src/live-frame.tsx` | Sandboxed live documents and no-flicker document swaps |
+| `shared/component-scope.ts` | The components a live or playback document uses, so unrelated component edits leave it alone |
 | `src/InteractionFrame.tsx`, `shared/interaction-document.ts` | Disposable viewer-local playback and its input/resource policy |
 | `src/canvas-navigation.ts` | Content bounds, fitted overview, and camera constraints |
 | `src/room.ts` | Realtime client, optimistic edits, and demand-loaded sources |
 | `src/thumbnail-cache.ts` | Bounded image loading and decoded-pixel budget |
-| `src/preview-loader.ts` | Batched preview transport and request backpressure |
+| `src/preview-loader.ts` | Batched preview transport, bitmap decoding and request backpressure |
 | `src/touch-gestures.ts` | Touch navigation state machine |
 | `src/components/ui/` | shadcn/ui primitives |
 | `worker/index.ts` | HTTP routes and authenticated browser entry points |
@@ -115,8 +117,14 @@ Only visible nodes, plus a margin, are considered. Rendering switches with on-sc
 
 Components can become live from 220 CSS px wide; screen previews use the thresholds above. Without thumbnails, up to twelve nodes can become live from 140 CSS px wide. The low-resolution cache admits a stable viewport working set, capped at 600 images, 16 million decoded pixels, and sixteen concurrent loads. Dense views beyond that budget use boxes until navigation makes room; they do not continuously evict and reload each other. Original image uploads are promoted only for up to eight large, actually visible images.
 
-Source/design edits and cold assets use the fresh-document swap (the warm
-theme-only update path was removed with theme switching on 2026-11-02). Overview admission remains bounded by
+Source edits, token edits, edits to a component the document uses, and cold assets
+use the fresh-document swap (the warm theme-only update path was removed with theme
+switching on 2026-11-02). A live document embeds only the components whose tags
+appear in its HTML, scripts and nested components included. The match is textual,
+so a tag inside a longer word (`x-row` in `flex-row`) also counts. An edit to a
+component the document never mentions builds the same document and keeps its
+iframe; HTML that builds tag names at runtime embeds them all. Thumbnails and
+screenshots still embed the whole design system. Overview admission remains bounded by
 the policy above. See [live canvas experiments](live-canvas-rendering.md) for the
 measured alternatives and the larger interactive rendering plan.
 
@@ -164,7 +172,7 @@ stores auth or prefetched private data in localStorage or a service worker.
 
 Worker fetch handlers use Cloudflare Smart Placement to reduce waits on upstream services. Static build assets still serve at the edge. Placement needs traffic to learn suitable locations; inspect `cf-placement` and measure authenticated socket readiness and preview loading after deployment. Asset routes use the location's Cache API, so a placement change can initially miss previews cached elsewhere.
 
-The file's Durable Object debounces edits for 1.2 seconds. A shared `ThumbnailQueue` grants one browser slot across automatic previews and explicit screenshots. Automatic work runs only while the file has a connected viewer, except for a single explicitly requested cover preview. It gives workspaces and files fair turns, prioritizes viewed pages, and stops at daily file/workspace/global browser-time limits. A browser session spans up to eight seconds of queue work with four tabs, re-querying between batches of 24. Failed pairs retry up to three times. Superseded objects are deleted while one selected fallback remains visible. See [thumbnail rendering](thumbnail-rendering.md) for policy, measurements, costs and alternatives. Thumbnails use immutable R2 URLs. Small viewport previews are fetched in stable groups of up to sixteen immutable thumbnail names, with four batches in flight. Each response reads at most eight R2 objects concurrently and includes at most 1 MiB of image bytes; missing or over-budget images fall back to their individual URLs. Groups and prefetched encoded data are bounded by the canvas's admitted viewport working set and released on navigation or disposal. Larger previews use a separate single-batch loader with the existing 32-million-pixel budget and two-image decode limit. Original uploads keep native image loading and HTTP caching.
+The file's Durable Object debounces edits for 1.2 seconds. A shared `ThumbnailQueue` grants one browser slot across automatic previews and explicit screenshots. Automatic work runs only while the file has a connected viewer, except for a single explicitly requested cover preview. It gives workspaces and files fair turns, prioritizes viewed pages, and stops at daily file/workspace/global browser-time limits. A browser session spans up to eight seconds of queue work with four tabs, re-querying between batches of 24. Failed pairs retry up to three times. Superseded objects are deleted while one selected fallback remains visible. See [thumbnail rendering](thumbnail-rendering.md) for policy, measurements, costs and alternatives. Thumbnails use immutable R2 URLs. Small viewport previews are fetched in groups of up to sixteen immutable thumbnail names, with four batches in flight. A preview keeps its group while it stays admitted, so a pan requests only the previews it newly admits; newly admitted names are sorted before grouping, so the opening view's keys stay stable. Each response reads at most eight R2 objects concurrently and includes at most 1 MiB of image bytes; missing, over-budget or undecodable images fall back to their individual URLs. Batch previews decode to bitmaps before their first paint, and the cache closes a bitmap as soon as it evicts it. Groups and prefetched encoded data are bounded by the canvas's admitted viewport working set and released on navigation or disposal. Larger previews use a separate single-batch loader with the existing 32-million-pixel budget and two-image decode limit. Original uploads keep native image loading and HTTP caching.
 
 The asset routes cache successful immutable images and complete preview batches at the edge and preserve their sandbox headers. New batches reuse cached individual images before reading R2; successful R2 reads populate both caches. Individual asset queries normalize to the R2 path; versioned batch keys sort and deduplicate the exact revisioned names. Partial or missing previews are not cached. Agent-created images without a supplied preview enter the rendering queue, producing a preview up to 400px wide / 1600px tall while retaining the original for close viewing. Browser uploads can supply their own preview. Without Browser Rendering, unpreviewed images use boxes at low zoom and the original at close zoom.
 
@@ -188,10 +196,13 @@ File URLs and anonymous view links include `?page=<page-id>` and one `node=<node
 parameter per selected node. Explicit links override the recipient's remembered
 page and fit the linked selection after the initial room snapshot, even when a
 camera was saved locally. Selecting nodes replaces the current history entry
-without moving the camera; switching pages adds an entry. Back and Forward restore
-the linked page and selection. Deleted targets fall back to an existing page, and
-selection is always limited to nodes on that page. Links without a target retain
-the remembered-page behavior.
+without moving the camera; switching pages adds an entry. A marquee drag shows
+its selection on the canvas and in the selection toolbar as it grows, and writes
+the URL once, on release or lost pointer capture, because browsers throttle history
+writes; peers and agents see the result then.
+Back and Forward restore the linked page and selection. Deleted targets fall
+back to an existing page, and selection is always limited to nodes on that page.
+Links without a target retain the remembered-page behavior.
 
 ## Identity and access
 

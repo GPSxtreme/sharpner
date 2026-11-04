@@ -1,8 +1,11 @@
 import { thumbnailUrl } from "../shared/thumbnail-url";
 
 type PreviewGroup = { key: string; fileId: string; names: string[] };
-type PendingPreview = { image: HTMLImageElement; url: string; group: PreviewGroup; cancelled: boolean; batch?: PreviewBatch };
-type PreviewBatch = { controller: AbortController; items: PendingPreview[]; timeout?: ReturnType<typeof setTimeout> };
+type PendingPreview = {
+  image: HTMLImageElement; url: string; group: PreviewGroup; decoded: (bitmap: ImageBitmap) => void;
+  cancelled: boolean; batch?: PreviewBatch;
+};
+type PreviewBatch = { group: PreviewGroup; controller: AbortController; items: PendingPreview[]; timeout?: ReturnType<typeof setTimeout> };
 const THUMBNAIL_URL = thumbnailUrl;
 const PREVIEWS_PER_BATCH = 16;
 const MAX_INFLIGHT_BATCHES = 4;
@@ -16,6 +19,20 @@ function previewGroup(fileId: string, names: string[]): PreviewGroup {
   };
 }
 
+// Native base64 decoding where the engine has it; this can run inside a paint, so avoid the per-byte loop.
+const fromBase64 = (Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array<ArrayBuffer> }).fromBase64;
+
+function webpBlob(encoded: string) {
+  let bytes: Uint8Array<ArrayBuffer>;
+  if (fromBase64) bytes = fromBase64(encoded);
+  else {
+    const binary = atob(encoded);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: "image/webp" });
+}
+
 /** Bounded transport for one admitted viewport preview set. Original images keep native loading. */
 export class PreviewLoader {
   private groups = new Map<string, PreviewGroup>();
@@ -26,24 +43,33 @@ export class PreviewLoader {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private readonly maxBatches: number;
+  private readonly decode: (blob: Blob) => Promise<ImageBitmap>;
 
-  constructor(options: { maxBatches?: number } = {}) {
+  constructor(options: { maxBatches?: number; decode?: (blob: Blob) => Promise<ImageBitmap> } = {}) {
     this.maxBatches = Math.max(1, Math.min(MAX_INFLIGHT_BATCHES, options.maxBatches ?? MAX_INFLIGHT_BATCHES));
+    // A detached image decodes on the main thread at its first drawImage; a bitmap is decoded before then.
+    this.decode = options.decode ?? ((blob) => createImageBitmap(blob));
   }
 
   prepare = (urls: string[]) => {
     if (this.disposed) return;
-    const previews = urls.filter((url) => THUMBNAIL_URL.test(url));
-    if (previews.length === this.groups.size && previews.every((url) => this.groups.has(url))) return;
+    const previews = new Set(urls.filter((url) => THUMBNAIL_URL.test(url)));
+    if (previews.size === this.groups.size && [...previews].every((url) => this.groups.has(url))) return;
+    // A preview keeps its group while it stays admitted, so a pan requests only what it newly admits.
+    // Sorting the new immutable URLs keeps a view's first keys stable as priorities and completions change.
+    const groups = new Map<string, PreviewGroup>();
     const files = new Map<string, { url: string; name: string }[]>();
-    // Sorting immutable URLs keeps cache keys stable as viewport priorities and completions change.
-    for (const url of previews.sort()) {
+    for (const url of [...previews].sort()) {
+      const group = this.groups.get(url);
+      if (group) {
+        groups.set(url, group);
+        continue;
+      }
       const match = THUMBNAIL_URL.exec(url)!;
       const entries = files.get(match[1]!) ?? [];
       entries.push({ url, name: match[2]! });
       files.set(match[1]!, entries);
     }
-    const groups = new Map<string, PreviewGroup>();
     for (const [fileId, entries] of files) {
       for (let start = 0; start < entries.length; start += PREVIEWS_PER_BATCH) {
         const chunk = entries.slice(start, start + PREVIEWS_PER_BATCH);
@@ -57,28 +83,28 @@ export class PreviewLoader {
     for (const key of this.failed) if (!keys.has(key)) this.failed.delete(key);
   };
 
-  load = (image: HTMLImageElement, url: string): (() => void) => {
+  /** A bundle preview arrives through `decoded` as a bitmap; any other preview loads into `image`. */
+  load = (image: HTMLImageElement, url: string, decoded: (bitmap: ImageBitmap) => void): (() => void) => {
     const match = THUMBNAIL_URL.exec(url);
     if (!match || this.disposed) {
       if (!this.disposed) image.src = url;
       return () => image.removeAttribute("src");
     }
     const group = this.groups.get(url) ?? previewGroup(match[1]!, [match[2]!]);
-    // Preserve the immutable source while the image itself decodes from the batch response.
-    image.dataset.previewSrc = url;
+    const item: PendingPreview = { image, url, group, decoded, cancelled: false };
     const encoded = this.ready.get(url);
-    if (encoded || this.failed.has(group.key)) {
-      image.src = encoded ? `data:image/webp;base64,${encoded}` : url;
-      return () => image.removeAttribute("src");
-    }
-    const item: PendingPreview = { image, url, group, cancelled: false };
-    const batch = this.batches.get(group.key);
-    if (batch) {
-      item.batch = batch;
-      batch.items.push(item);
-    } else {
-      this.pending.push(item);
-      this.schedule();
+    if (encoded) this.decodePreview(item, encoded);
+    else if (this.failed.has(group.key)) image.src = url;
+    else {
+      // A preview that left and returned while its old group is on its way joins that request.
+      const batch = this.batches.get(group.key) ?? this.inflightWith(group.fileId, match[2]!);
+      if (batch) {
+        item.batch = batch;
+        batch.items.push(item);
+      } else {
+        this.pending.push(item);
+        this.schedule();
+      }
     }
     return () => {
       item.cancelled = true;
@@ -118,7 +144,7 @@ export class PreviewLoader {
         items.push(item);
         return false;
       });
-      const batch: PreviewBatch = { controller: new AbortController(), items };
+      const batch: PreviewBatch = { group, controller: new AbortController(), items };
       for (const item of items) item.batch = batch;
       this.batches.set(group.key, batch);
       batch.timeout = setTimeout(() => batch.controller.abort(), BATCH_TIMEOUT_MS);
@@ -143,7 +169,8 @@ export class PreviewLoader {
       for (const item of items) {
         if (this.disposed || item.cancelled) continue;
         const encoded = previews.get(item.url);
-        item.image.src = encoded ? `data:image/webp;base64,${encoded}` : item.url;
+        if (encoded) this.decodePreview(item, encoded);
+        else item.image.src = item.url;
       }
     } catch {
       if (!controller.signal.aborted) this.failed.add(group.key);
@@ -156,5 +183,24 @@ export class PreviewLoader {
       this.batches.delete(group.key);
       this.schedule();
     }
+  }
+
+  private inflightWith(fileId: string, name: string) {
+    for (const batch of this.batches.values()) if (batch.group.fileId === fileId && batch.group.names.includes(name)) return batch;
+    return undefined;
+  }
+
+  private decodePreview(item: PendingPreview, encoded: string) {
+    new Promise<ImageBitmap>((resolve) => resolve(this.decode(webpBlob(encoded)))).then((bitmap) => {
+      // No cache entry will draw or release a bitmap that resolves after its load ended.
+      if (this.disposed || item.cancelled) bitmap.close();
+      else item.decoded(bitmap);
+    }, () => {
+      if (this.disposed || item.cancelled) return;
+      // Fall back to the immutable URL, and send this group's retries there instead of refetching it.
+      this.ready.delete(item.url);
+      this.failed.add(item.group.key);
+      item.image.src = item.url;
+    });
   }
 }
