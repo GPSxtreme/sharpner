@@ -211,6 +211,14 @@ const MIGRATIONS = [
     sql.exec(`INSERT INTO meta (k, v) VALUES ('freeSections', ?)`, JSON.stringify(free));
     sql.exec(`UPDATE nodes SET layout = 'auto' WHERE kind = 'section'`);
   },
+  // A release without compact specimens ran for about 12 minutes on 4 Nov 2026 and rendered some component previews
+  // with the old caption at their current revision. Every component re-renders once more with the compact specimen.
+  (sql: SqlStorage) => {
+    if (sql.exec(`SELECT 1 FROM meta WHERE k = 'compactSpecimensAgain'`).toArray().length) return;
+    sql.exec(`INSERT INTO meta (k, v) VALUES ('compactSpecimensAgain', '1')`);
+    sql.exec(`UPDATE nodes SET rev = rev + 1, thumb_tries = 0 WHERE kind = 'component'`);
+    sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('thumbReconcile', '1')`);
+  },
 ];
 
 /** Files whose owner asked for every screen in dark; see the migration that uses it. */

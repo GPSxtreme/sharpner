@@ -75,9 +75,9 @@ describe("persisted automatic layout", () => {
     expect(room.node("legacy-screen")).toMatchObject({ x: 1000, y: 1200 });
     expect(rects().get("legacy-section")).toMatchObject({ x: 0, y: 0 });
     expect(rects().get("legacy-screen")).toMatchObject({ x: SECTION_PAD, y: SECTION_PAD });
-    // Four specimen refreshes: the old card presentation, dark specimens, standards-mode measurement, then compact specimens.
-    expect(room.node("component")!.rev).toBe(5);
-    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "19" });
+    // Five specimen refreshes: the old card presentation, dark specimens, standards-mode measurement, then compact specimens twice.
+    expect(room.node("component")!.rev).toBe(6);
+    expect(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get()).toEqual({ v: "20" });
   });
 
   it("refreshes cached token previews once for named themes without rerendering screens or components", () => {
