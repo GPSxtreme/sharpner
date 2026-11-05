@@ -35,6 +35,15 @@ Claude Code receives the result on the registered local callback and stores the
 credentials for later sessions. If Sharpner is already registered, skip the add
 command and retry authentication directly.
 
+Without `--client-id`, Claude Code sends its own client metadata URL,
+`https://claude.ai/oauth/claude-code-client-metadata`, as its client ID. That
+works only when the deployment approved the URL in Clerk; sharpner.app does.
+Otherwise Clerk's sign-in page shows `invalid_client`: "The Client ID Metadata
+Document could not be resolved." To recover, run `claude mcp remove sharpner`,
+add the server with the command above, and authenticate again. If the server
+exists in more than one scope, `remove` needs `-s local`, `-s project`, or
+`-s user`. Local scope belongs to one project directory, so run it there.
+
 For SSH or headless terminals, use `claude mcp login sharpner --no-browser` and
 follow its authorization URL and callback prompts. See [Claude Code's MCP
 authentication guide](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
@@ -189,6 +198,16 @@ Publish Clerk's OAuth server. Other agents need their own registered public
 client or an approved Client ID Metadata Document (CIMD). Use pre-registered
 clients only and approve CIMD metadata URLs in the Clerk Dashboard. Dynamic
 client registration is disabled.
+
+Claude Code added without `--client-id` uses the CIMD URL
+`https://claude.ai/oauth/claude-code-client-metadata`. To let that command
+work, open **OAuth applications → Add application → Pre-register CIMD client**,
+choose **Claude Code**, and keep `openid`, `profile`, `email`, and
+`offline_access`. Keep **Client admission** on a pre-registered option. Clerk
+fetches the document from claude.ai when you pre-register it; if the client's
+metadata status shows Error, select **Refresh metadata**. CIMD clients always
+see Clerk's consent screen. The sharpner.app deployment pre-registers Claude
+Code this way.
 
 ## Agent experience feedback
 

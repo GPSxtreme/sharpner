@@ -22,24 +22,26 @@ export function AgentSettings({ config, open, onOpenChange }: { config: AgentCon
   const [promptOpen, setPromptOpen] = useState(false);
   const url = `${location.origin}/mcp`;
   const guideUrl = `${location.origin}/agent-setup.md`;
+  const publicClient = config.mcpClientId && config.mcpCallbackPort ? { id: config.mcpClientId, port: config.mcpCallbackPort } : null;
+  const callback = publicClient ? `http://localhost:${publicClient.port}/callback` : null;
+  const cli = `claude mcp add --transport http${publicClient ? ` --client-id ${publicClient.id} --callback-port ${publicClient.port}` : ""} sharpner ${url}`;
   const prompt = [
     "Connect this agent to Sharpner.",
     "",
     `Setup guide: ${guideUrl}`,
     `MCP endpoint: ${url}`,
+    ...(publicClient ? [`OAuth client ID: ${publicClient.id}`, `OAuth callback: ${callback}`, `Claude Code command: ${cli}`] : []),
     "",
-    "1. Read the setup guide and identify the MCP host/client in this environment. Use its supported setup mechanism and preserve existing MCP server settings.",
+    "1. Read the setup guide and identify the MCP host/client in this environment. Use its supported setup mechanism and preserve the settings of other MCP servers.",
     "2. Configure Sharpner using the guide's native connection or local bridge instructions, whichever this client supports.",
     "3. Start authentication separately. Guide me through any browser sign-in, consent, restart, or client UI steps that you cannot complete yourself.",
     "4. Verify the connection by listing its tools and calling get_app_state. Report which workspaces are accessible.",
     "5. If this environment cannot complete setup, explain the exact missing capability and the next step for me. Do not claim success until verified, and do not create or edit designs during setup.",
   ].join("\n");
-  const clientFlags = config.mcpClientId && config.mcpCallbackPort ? ` --client-id ${config.mcpClientId} --callback-port ${config.mcpCallbackPort}` : "";
-  const cli = `claude mcp add --transport http${clientFlags} sharpner ${url}`;
-  const bridge = config.mcpClientId && config.mcpCallbackPort ? {
+  const bridge = publicClient ? {
     command: "npx",
-    args: ["-y", "mcp-remote@0.15.2", url, String(config.mcpCallbackPort), "--callback-path", "/callback",
-      "--static-oauth-client-info", JSON.stringify({ client_id: config.mcpClientId }), "--transport", "http-only"],
+    args: ["-y", "mcp-remote@0.15.2", url, String(publicClient.port), "--callback-path", "/callback",
+      "--static-oauth-client-info", JSON.stringify({ client_id: publicClient.id }), "--transport", "http-only"],
   } : null;
   const json = JSON.stringify({ mcpServers: { sharpner: bridge ?? { type: "http", url } } }, null, 2);
   return (
@@ -64,7 +66,8 @@ export function AgentSettings({ config, open, onOpenChange }: { config: AgentCon
           </TabsContent>
           <TabsContent value="manual" className="flex min-w-0 flex-col gap-3">
             <CopyBlock label="MCP endpoint" text={url} />
-            <p className="m-0 text-xs leading-relaxed text-muted-foreground">Use Streamable HTTP and sign in with OAuth through your client’s connection settings. The <a href={guideUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">setup guide</a> covers native connections and a local bridge.</p>
+            {publicClient && <CopyBlock label="OAuth client ID" text={publicClient.id} />}
+            <p className="m-0 text-xs leading-relaxed text-muted-foreground">Use Streamable HTTP and sign in with OAuth through your client’s connection settings.{callback && <> If your client asks for an OAuth client, use this client ID with the callback <code className="font-mono">{callback}</code>.</>} The <a href={guideUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">setup guide</a> covers native connections and a local bridge.</p>
             <Collapsible className="border-t pt-2">
               <CollapsibleTrigger asChild><Button variant="ghost" className="w-full justify-between">Claude Code commands<IconChevronDown aria-hidden /></Button></CollapsibleTrigger>
               <CollapsibleContent className="pt-3">
