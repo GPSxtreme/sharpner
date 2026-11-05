@@ -29,8 +29,21 @@ For a UI you cannot operate, give the member the exact fields to enter.
 Use native remote MCP when it supports the registered public client and callback.
 Register the server, then start authentication. Registration alone does not sign in.
 
-For Claude Code, pass the public client ID and callback port to `mcp add`.
+For Claude Code, run this command with the values from `/auth/config`:
+
+```sh
+claude mcp add --transport http --client-id <mcpClientId> --callback-port <mcpCallbackPort> sharpner <origin>/mcp
+```
+
+If the project configures Sharpner in `.mcp.json` instead, add
+`"oauth": {"clientId": "<mcpClientId>", "callbackPort": <mcpCallbackPort>}` to its `sharpner` entry.
 Then run `claude mcp login sharpner`, or use `/mcp` → `sharpner` → **Authenticate**.
+
+Without `--client-id`, Claude Code sends its own client metadata URL.
+That works only if the deployment owner approved the URL in Clerk.
+If not, Clerk shows `invalid_client`: "The Client ID Metadata Document could not be resolved."
+To recover, run `claude mcp remove sharpner`, add the server with the command above, and authenticate again.
+If the server exists in more than one scope, `remove` needs `-s local`, `-s project`, or `-s user`.
 
 ## Fallback for clients that can launch local MCP servers
 
@@ -77,8 +90,8 @@ The browser's localhost might not reach the agent's machine.
 If native OAuth and the bridge cannot work, explain the required client or callback support.
 The server URL alone does not authorize unknown OAuth clients.
 
-If public client details are null, ask the deployment owner to register a client.
-An approved client metadata URL is another option.
+If public client details are null, ask the deployment owner to register a public client.
+The owner can also approve the client's metadata URL in Clerk.
 
 ## Verify before declaring success
 
