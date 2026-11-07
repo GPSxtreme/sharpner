@@ -5,7 +5,7 @@ import { fileFor, room } from "./data";
 import { prepareRenderDesign } from "./render-fonts";
 import { bytesToBase64, capture, captureThumbnails, loadFrame, loadImagePreview, withTimeout } from "./render";
 import { planSprites, renderSprite, type SpritePhases } from "./render-sprite";
-import { openBrowser, releaseBrowser } from "./browser-session";
+import { openBrowser, openTab, releaseBrowser } from "./browser-session";
 import { selectThumbnail, type ThemeThumbnails } from "../shared/thumbnails";
 import { imagePreviewFor } from "../shared/image-preview";
 import { sourceBatches, type SourceItem } from "../shared/source-batches";
@@ -1030,8 +1030,11 @@ export class FileRoom extends DurableObject<Env> {
         // The session deadline passed while connecting; the cleanup below has already run.
         if (stopped) { await session.browser.close().catch(() => {}); return; }
         browser = session.browser;
-        const tabs = new Set(await Promise.all(Array.from({ length: Math.max(1, tabCount) }, () => browser!.newPage())));
-        opened.push(...tabs);
+        const tabs = new Set(await Promise.all(Array.from({ length: Math.max(1, tabCount) }, async () => {
+          const tab = await openTab(browser!);
+          opened.push(tab);
+          return tab;
+        })));
         // Re-query between batches so edits supersede queued work.
         while (due() && tabs.size) {
           // A design change bumps the revision of every node it affects, so a render of any other node stays

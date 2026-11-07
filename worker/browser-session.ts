@@ -21,6 +21,20 @@ export async function openBrowser(endpoint: Parameters<typeof puppeteer.launch>[
 }
 
 /**
+ * Opens a tab in a browser context of its own. Puppeteer serializes screenshots per context and brings the
+ * capturing tab to the front of its window, so tabs sharing one context take turns capturing; in their own
+ * contexts they capture in parallel. Falls back to the shared context when contexts are unavailable.
+ */
+export async function openTab(browser: Browser): Promise<Page> {
+  try {
+    return await (await browser.createBrowserContext()).newPage();
+  } catch (err) {
+    console.warn("thumbnail browser context failed", String(err));
+    return browser.newPage();
+  }
+}
+
+/**
  * Closes this turn's pages and disconnects, leaving the browser running for the next turn; returns its session.
  * A browser that may be unhealthy (a timed-out session, a wedged page) closes instead, as does one whose pages
  * will not close.
@@ -28,7 +42,11 @@ export async function openBrowser(endpoint: Parameters<typeof puppeteer.launch>[
 export async function releaseBrowser(browser: Browser, pages: Page[], healthy: boolean): Promise<string | undefined> {
   if (healthy) {
     try {
-      await withTimeout(Promise.all(pages.map((page) => page.close())), 5000, "page close");
+      // A tab's own context closes with its pages; a tab in the shared context closes alone.
+      await withTimeout(Promise.all(pages.map((page) => {
+        const context = page.browserContext?.();
+        return context && context !== browser.defaultBrowserContext() ? context.close() : page.close();
+      })), 5000, "page close");
       const session = browser.sessionId();
       await browser.disconnect();
       return session;

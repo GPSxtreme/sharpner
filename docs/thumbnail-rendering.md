@@ -38,7 +38,7 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Policy | Default |
 | --- | ---: |
 | Automatic browsers, across the deployment | 1 |
-| Browser tabs in a turn | 4, each rendering one sprite at a time |
+| Browser tabs in a turn | 4, each in a browser context of its own, rendering one sprite at a time |
 | Nodes per batch / per sprite | 96 / 24 |
 | Edit debounce | None for the first edit after 1.2 quiet seconds; 1.2 seconds within a burst |
 | Warm browser between turns | 60 seconds of keep-alive; reused while 10 seconds remain |
@@ -116,6 +116,14 @@ for photographic content and keeps it inside one WebSocket message; a node large
 band is captured directly as WebP. Frames wider than 1280px form sprites of
 their own width, captured at the sharp tier's scale. `worker/render-sprite.ts` holds
 the renderer and its limits.
+
+Each tab opens in a browser context of its own. Puppeteer serializes screenshots per
+context and brings the capturing tab to the front, so tabs sharing a context take turns
+capturing; in their own contexts they capture in parallel. Locally this halved the
+summed capture time for 40 screens (4.2 to 2.2 seconds). A turn falls back to the
+shared context when contexts are unavailable, and closes its contexts when it ends.
+A raw CDP capture that skips the lock does not work: a tab that is not in front
+produces no frames, and the capture times out.
 
 A sprite sends only the font subsets its documents' characters need. Google splits
 each weight into `unicode-range` subsets, and the Inter sheet in the measurement
