@@ -14,7 +14,7 @@ export type SpriteCapture = { width: number; measured: number; height: number; h
 /** `fallback` nodes did not render in the sprite (slow to load, never settled, or no room) and render on their own. */
 export type SpriteResult = { captured: Map<string, SpriteCapture>; fallback: string[]; phases: SpritePhases };
 /** Milliseconds per stage of one sprite, for the turn log. */
-export type SpritePhases = { load: number; settle: number; capture: number; encode: number };
+export type SpritePhases = { seed: number; load: number; settle: number; capture: number; encode: number };
 
 export const SPRITE_LIMITS = {
   /** Nodes in one sprite. */
@@ -89,7 +89,7 @@ type Layout = { placed: Placed[]; fallback: number[]; width: number; height: num
 /** Renders every job it can into one page and returns their captures; the rest are listed for a single render. */
 export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: string, design: RenderDesign, limits = SPRITE_LIMITS): Promise<SpriteResult> {
   const captured = new Map<string, SpriteCapture>();
-  const phases: SpritePhases = { load: 0, settle: 0, capture: 0, encode: 0 };
+  const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0 };
   if (!jobs.length) return { captured, fallback: [], phases };
   let mark = Date.now();
   const lap = (phase: keyof SpritePhases) => { const now = Date.now(); phases[phase] += now - mark; mark = now; };
@@ -102,6 +102,8 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
   const seeded = await Promise.all(seeds.map((s) => seedCss.get(s.cssSource)!));
   const docs = jobs.map((job, i) => frameDocument(job.html, { base, design, compiledTailwind: true, tailwindCss: seeded[i], fontCss: design.fonts ? FONT_MARK : undefined }));
   const sizes = jobs.map((job) => ({ w: roundWidth(job.width), h: Math.round(job.height ?? AUTO_VIEWPORT) }));
+  // The Worker side: the first Tailwind pass and the documents.
+  lap("seed");
 
   await page.goto("about:blank");
   await page.setContent(SHELL, { waitUntil: "load", timeout: 5000 });

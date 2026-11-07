@@ -1,12 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("cloudflare:workers", () => ({ DurableObject: class { constructor(readonly ctx: DurableObjectState, readonly env: Env) {} } }));
-const calls = vi.hoisted(() => ({ render: vi.fn(), quantum: [] as number[] }));
-vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: (_notAfter: number, quantumMs: number) => { calls.quantum.push(quantumMs); return calls.render(fileId); } }) }));
+const calls = vi.hoisted(() => ({ render: vi.fn(), quantum: [] as number[], warm: [] as (string | undefined)[] }));
+vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: (_notAfter: number, quantumMs: number, warm?: string) => { calls.quantum.push(quantumMs); calls.warm.push(warm); return calls.render(fileId); } }) }));
 import { ThumbnailQueue } from "./thumbnail-queue";
 import { BACKFILL, THUMBNAIL_POLICY as policy } from "./thumbnail-policy";
 const databases: DatabaseSync[] = [];
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); calls.quantum.length = 0; });
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); calls.quantum.length = 0; calls.warm.length = 0; });
 afterEach(() => { vi.useRealTimers(); for (const db of databases.splice(0)) db.close(); });
 function fixture() {
   const db = new DatabaseSync(":memory:"); databases.push(db);
@@ -23,6 +23,28 @@ function fixture() {
   const fire = async () => { alarm = null; await queue.alarm(); };
   return {db, queue, wake, fire, alarm: () => alarm};
 }
+
+describe("warm browser", () => {
+  it("hands the browser one turn left running to the next turn, across files, until its keep-alive runs short", async () => {
+    const {queue, fire} = fixture();
+    calls.render.mockResolvedValueOnce({ more: false, browserMs: 1000, rendered: 4, warm: "session-1" })
+      .mockResolvedValueOnce({ more: false, browserMs: 0, rendered: 0 })
+      .mockResolvedValueOnce({ more: false, browserMs: 900, rendered: 2, warm: "session-1" })
+      .mockResolvedValueOnce({ more: false, browserMs: 900, rendered: 2, warm: null });
+    await queue.enqueue("a-one", Date.now()); await fire();
+    // A turn that opened no browser keeps the warm one for the turn after it.
+    await queue.enqueue("b-one", Date.now()); await fire();
+    await queue.enqueue("a-two", Date.now()); await fire();
+    await queue.enqueue("b-two", Date.now()); await fire();
+    // That turn closed its browser, so the next one launches.
+    calls.render.mockResolvedValueOnce({ more: false, browserMs: 900, rendered: 2, warm: "session-2" });
+    await queue.enqueue("a-one", Date.now()); await fire();
+    expect(calls.warm).toEqual([undefined, "session-1", "session-1", "session-1", undefined]);
+    vi.advanceTimersByTime(policy.keepAliveMs - 5000);
+    await queue.enqueue("b-one", Date.now()); await fire();
+    expect(calls.warm.at(-1)).toBeUndefined();
+  });
+});
 
 describe("shared automatic render budget", () => {
   it("coalesces requests, debounces, and rotates teams before returning to another file in one team", async () => {

@@ -40,7 +40,8 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Automatic browsers, across the deployment | 1 |
 | Browser tabs in a turn | 4, each rendering one sprite at a time |
 | Nodes per batch / per sprite | 96 / 24 |
-| Edit debounce | 1.2 seconds |
+| Edit debounce | None for the first edit after 1.2 quiet seconds; 1.2 seconds within a burst |
+| Warm browser between turns | 60 seconds of keep-alive; reused while 10 seconds remain |
 | Fair turn / sprite deadline / hard session deadline | 8 / 20 / 40 seconds; the turn is 15 seconds when no other file can run |
 | Reserved time before admission | 60 seconds, refunded to measured elapsed time |
 | Daily automatic browser time per file, per workspace, globally and for `BACKFILL` files | Lifted on 4 Nov 2026: about 11.5 days each, so never reached. Spend is still recorded. Earlier values were 30 minutes, 1 hour, 4 hours and 1 hour. |
@@ -50,7 +51,12 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 The shared Durable Object rotates workspaces, then files. Files in the temporary
 `BACKFILL` set wait behind every file someone is viewing. A busy file keeps one
 browser session across its batches until its fair turn expires; it does not
-launch another browser per batch or retain an idle browser between turns.
+launch another browser per batch. A healthy turn closes its pages and leaves the
+browser running; the queue hands that session to the next automatic turn, of any
+file, for up to 60 seconds, so a burst of edits pays one launch (1–2 seconds in
+production) instead of one per turn. A turn with a failed sprite, a failed single
+render or a timed-out session closes its browser instead. Only a session Sharpner
+left is reused, never another idle session on the account.
 Persistent leases and conservative reservations protect admission across
 restarts and failures. Explicit `screenshot_nodes` requests use the same browser
 slot and the file's serialized browser work, with bounded waiting and session
@@ -116,7 +122,9 @@ with its frame, when it is still loading after 8 seconds, when it does not fit t
 sprite page, or when its sprite failed. The FileRoom keeps those revisions in the
 `thumbSolo` meta key. A failed sprite charges no retry and retires only its tab.
 `thumbnail-turn` logs `pending`, the previews still trailing their node's revision
-after the turn, with sprite counts and time per phase.
+after the turn, with sprite counts, `launchMs`, whether the browser was `reused` and
+left `warm`, and time per phase: `seed` (the Worker's first Tailwind pass and the
+documents), `load`, `settle`, `capture` and `encode`, summed over the turn's tabs.
 
 ### Measurements, 2026-11-07
 
