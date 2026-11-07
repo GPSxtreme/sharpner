@@ -806,8 +806,8 @@ function nodeLabel(f: CanvasNode, catalogs: ReadonlySet<string>, cells: Readonly
 const OUTDATED_ALPHA = 0.45;
 const outdated = (f: CanvasNode) => f.kind !== "image" && !!f.thumbHi && !previewCurrent(f);
 
-/** Per canvas, the preview last painted for each node: it stays up while a replacement loads. */
-const lastPainted = new WeakMap<HTMLCanvasElement, Map<string, PreviewImage>>();
+/** Per canvas, the preview last painted for each node and the preview it belongs to: it stays up while a replacement loads. */
+const lastPainted = new WeakMap<HTMLCanvasElement, Map<string, { image: PreviewImage; url: string }>>();
 
 export function paintRaster(
   canvas: HTMLCanvasElement,
@@ -908,7 +908,7 @@ export function paintRaster(
   const nodeBaseline = labelBaseline(ctx);
   let painted = lastPainted.get(canvas);
   if (!painted) lastPainted.set(canvas, painted = new Map());
-  const paintedNow = new Map<string, PreviewImage>();
+  const paintedNow = new Map<string, { image: PreviewImage; url: string }>();
   for (const { node: f, rect: r, screenWidth: screenW } of items) {
     const x = r.x * cam.z + cam.x, y = r.y * cam.z + cam.y, sw = screenW, sh = r.h * cam.z;
     const url = thumbnailSource(f);
@@ -916,17 +916,20 @@ export function paintRaster(
     const box = !sharper && Boolean(url && thumbnails && !thumbnails.has(url));
     const current = sharper ?? (!box && url ? thumbnails?.get(url) ?? null : null);
     // A new revision's preview (after a source change) replaces the old one only once loaded,
-    // instead of blanking the frame in between.
-    const kept = current ?? (!box && url ? painted.get(f.id) ?? null : null);
+    // instead of blanking the frame in between. Until then the old one is dimmed like any outdated preview:
+    // the node's revision already has its new preview, so full opacity would pass old pixels off as current.
+    const previous = !current && !box && url ? painted.get(f.id) : undefined;
+    const kept = current ?? previous?.image ?? null;
+    const replaced = !!previous && previous.url !== url;
     // The cache closes a bitmap it evicts, even one kept here. A closed bitmap measures 0x0 and
     // drawImage would throw on it, so it no longer counts as a preview.
     const { width: imageW, height: imageH } = kept ? previewSize(kept) : { width: 0, height: 0 };
     const img = imageW > 0 && imageH > 0 ? kept : null;
-    if (img) paintedNow.set(f.id, img);
+    if (img) paintedNow.set(f.id, { image: img, url: current ? url! : previous!.url });
     const born = fx.appeared.get(f.id);
     const fresh = fx.reducedMotion || born === undefined ? 1 : Math.min(1, (fx.now - born) / MATERIALIZE_MS);
     // A preview from an earlier revision (say, the previous revision) stays dimmed until its re-render lands.
-    ctx.globalAlpha = (1 - (1 - fresh) ** 3) * (img && outdated(f) ? OUTDATED_ALPHA : 1);
+    ctx.globalAlpha = (1 - (1 - fresh) ** 3) * (img && (outdated(f) || replaced) ? OUTDATED_ALPHA : 1);
     ctx.fillStyle = box ? COLORS.box : img ? "#fff" : COLORS.placeholder;
     if (f.kind !== "image" || !img) ctx.fillRect(x, y, sw, sh);
     if (img) {

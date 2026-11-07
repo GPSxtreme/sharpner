@@ -15,14 +15,17 @@ export const backfilling = (fileId: string | undefined, now = Date.now()) => !!f
 export const THUMBNAIL_POLICY = {
   debounceMs: 1200,
   tabs: 4,
-  batch: 24,
+  // Nodes queried per batch. Each tab renders a sprite of up to SPRITE_LIMITS.nodes of them from one page.
+  batch: 96,
   maxTries: 3,
   quantumMs: 8000,
   // A file with no other file waiting keeps its browser longer, so fewer turns pay for a browser launch.
   soloQuantumMs: 15_000,
-  sessionMs: 20_000,
+  // A sprite still running when the quantum ends finishes; a sprite past spriteMs ends the session.
+  spriteMs: 20_000,
+  sessionMs: 40_000,
   // Browser lifetime is reserved before starting, then refunded to actual elapsed time.
-  reservationMs: 45_000,
+  reservationMs: 60_000,
   screenshotSessionMs: 110_000,
   screenshotLeaseMs: 150_000,
   // Daily budgets were 30 min per file, 60 min per team, 4 h overall and 60 min of backfill. The owner lifted them

@@ -101,13 +101,19 @@ describe("raster previews while zoomed out", () => {
     f.paint(0.5, [component], upgrades);
     expect(f.drawImage.mock.lastCall?.[0]).toBe(f.images[0]);
     const restyled = { ...component, rev: 2, thumbRev: 2, thumbLo: "/button-dark-256.webp", thumbHi: "/button-dark-1280.webp" };
+    const alphas: number[] = [];
     f.drawImage.mockClear();
+    f.drawImage.mockImplementation(() => { alphas.push(f.ctx.globalAlpha ?? 1); });
+    f.paint(0.5, [restyled], upgrades);
+    expect(f.drawImage.mock.lastCall?.[0]).toBe(f.images[0]);
+    // The new revision's preview exists but has not loaded: the old pixels stay up, dimmed, as an outdated preview does.
     f.paint(0.5, [restyled], upgrades);
     expect(f.drawImage.mock.lastCall?.[0]).toBe(f.images[0]);
     f.finish();
     f.paint(0.5, [restyled], upgrades);
     expect(f.images.at(-1)!.src).toBe(restyled.thumbLo);
     expect(f.drawImage.mock.lastCall?.[0]).toBe(f.images.at(-1));
+    expect(alphas).toEqual([0.45, 0.45, 1]);
     f.cache.dispose(); f.highCache.dispose();
   });
 

@@ -6,9 +6,19 @@ import { emptyBrand, type Actor, type NodeInput, type Op, type ServerMsg } from 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class { constructor(readonly ctx: DurableObjectState, readonly env: Env) {} },
 }));
-const renderer = vi.hoisted(() => ({ launch: vi.fn(), loadFrame: vi.fn(), loadImagePreview: vi.fn(), capture: vi.fn(), captureThumbnails: vi.fn() }));
+const renderer = vi.hoisted(() => ({ launch: vi.fn(), loadFrame: vi.fn(), loadImagePreview: vi.fn(), capture: vi.fn(), captureThumbnails: vi.fn(), renderSprite: vi.fn() }));
 vi.mock("@cloudflare/puppeteer", () => ({ default: { launch: renderer.launch } }));
 vi.mock("./render", async (original) => ({ ...await original<typeof import("./render")>(), loadFrame: renderer.loadFrame, loadImagePreview: renderer.loadImagePreview, capture: renderer.capture, captureThumbnails: renderer.captureThumbnails }));
+vi.mock("./render-sprite", async (original) => ({ ...await original<typeof import("./render-sprite")>(), renderSprite: renderer.renderSprite }));
+/** A sprite renders its nodes the way single renders do, so the loadFrame mock sees every node either way. */
+async function spriteOfSingles(tab: unknown, jobs: { id: string }[], base: string, design: unknown) {
+  const captured = new Map<string, unknown>();
+  for (const n of jobs) {
+    const size = await renderer.loadFrame(tab, n, base, design);
+    captured.set(n.id, { ...size, ...await renderer.captureThumbnails(tab, size.width, size.height) });
+  }
+  return { captured, fallback: [], phases: { load: 0, settle: 0, capture: 0, encode: 0 } };
+}
 import { darken, FileRoom } from "./room";
 
 const databases: DatabaseSync[] = [];
@@ -19,6 +29,7 @@ beforeEach(() => {
   renderer.loadImagePreview.mockReset().mockResolvedValue({ width: 800, height: 600 });
   renderer.capture.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]));
   renderer.captureThumbnails.mockReset().mockResolvedValue({ lo: new Uint8Array([1]), hi: new Uint8Array([2]) });
+  renderer.renderSprite.mockReset().mockImplementation(spriteOfSingles);
 });
 const member: Actor = { id: "alice", name: "Alice", avatar: null };
 
@@ -86,12 +97,14 @@ describe("thumbnail scheduling", () => {
     renderer.loadFrame.mockClear();
     const before = broadcasts.length;
     await render();
-    const rendered = renderer.loadFrame.mock.calls.map(([, node]) => (node as { id: string }).id);
-    expect(rendered.slice(0, 2).sort()).toEqual(["viewed-a", "viewed-b"]);
-    // Each preview is published as soon as it renders, not once per batch.
-    const published = broadcasts.slice(before).map((m) => m.type === "sync" ? m.nodes?.map((n) => n.id) : []);
-    expect(published.map((ids) => ids?.[0]).sort()).toEqual([...rendered].sort());
-    expect(published.every((ids) => ids?.length === 1)).toBe(true);
+    const sprites = renderer.renderSprite.mock.calls.map(([, jobs]) => (jobs as { id: string }[]).map((n) => n.id));
+    expect(sprites[0]!.slice(0, 2)).toEqual(["viewed-a", "viewed-b"]);
+    // Each sprite's previews are published as soon as it renders, not once per batch or turn.
+    const published = broadcasts.slice(before).map((m) => m.type === "sync" ? m.nodes!.map((n) => n.id) : []);
+    // Sprites finish in any order, so compare the sets of nodes published together.
+    const together = (groups: string[][]) => groups.map((ids) => [...ids].sort().join(",")).sort();
+    expect(together(published)).toEqual(together(sprites));
+    expect(published.flat().sort()).toEqual(renderer.loadFrame.mock.calls.map(([, node]) => (node as { id: string }).id).sort());
     expect(room.node("viewed-a")).toMatchObject({ thumbRev: room.node("viewed-a")!.rev });
   });
 
@@ -279,9 +292,63 @@ describe("thumbnail scheduling", () => {
     await render();
     expect(room.node("screen")!.thumbHi).toBeNull();
     renderer.loadFrame.mockRejectedValue(new Error("bad frame"));
-    await render(); await render(); await render(); await render();
+    await render(); await render(); await render(); await render(); await render();
     expect(db.prepare("SELECT tries FROM node_thumbnails WHERE node_id='screen' AND theme=''").get()).toEqual({tries:3});
-    expect(renderer.loadFrame).toHaveBeenCalledTimes(4);
+    // The raced render, the sprite that failed (free: the node then renders alone) and three charged single renders.
+    expect(renderer.loadFrame).toHaveBeenCalledTimes(5);
+    expect(renderer.renderSprite).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps rendering other previews through a component edit, and renders the affected ones against the new design", async () => {
+    const {room,create,apply,render} = fixture(true);
+    await create("button",{kind:"component",name:"Button",source:"<button>Old</button>"});
+    await create("uses",{source:"<main><x-button></x-button></main>"});
+    await create("plain",{source:"<p>No components</p>"});
+    let edited = false;
+    renderer.renderSprite.mockImplementation(async (tab, jobs, base, design) => {
+      const result = await spriteOfSingles(tab, jobs, base, design);
+      if (!edited) {
+        edited = true;
+        await apply([{t:"node.put",id:"button",node:{source:"<button>New</button>"}}]);
+        // That edit's debounce would end the turn; this test is about the design change.
+        room["setMeta"]("thumbAfter", "0");
+      }
+      return result;
+    });
+    await render();
+    for (const id of ["button","uses","plain"]) expect(room.node(id)).toMatchObject({thumbRev:room.node(id)!.rev});
+    const renders = renderer.loadFrame.mock.calls.map(([,n,,design]) => ({id:(n as {id:string}).id,html:(design as {components:{html:string}[]}).components[0]!.html}));
+    // The unaffected screen rendered once; the button and its user rendered again in the same turn, with the new definition.
+    expect(renders.filter((r) => r.id === "plain")).toHaveLength(1);
+    for (const id of ["button","uses"]) expect(renders.filter((r) => r.id === id).at(-1)!.html).toBe("<button>New</button>");
+  });
+
+  it("renders a node alone once it falls back from a sprite", async () => {
+    const {room,create,render} = fixture(true);
+    await create("grows",{height:null}); await create("calm"); await create("other");
+    renderer.renderSprite.mockImplementation(async (tab, jobs: {id:string}[], base, design) => ({
+      ...await spriteOfSingles(tab, jobs.filter((n) => n.id !== "grows"), base, design),
+      fallback: jobs.some((n) => n.id === "grows") ? ["grows"] : [],
+    }));
+    await render();
+    for (const id of ["grows","calm","other"]) expect(room.node(id)).toMatchObject({thumbRev:room.node(id)!.rev});
+    // Offered to a sprite once; then rendered on its own page in the same turn.
+    expect(renderer.renderSprite.mock.calls.filter(([,jobs]) => (jobs as {id:string}[]).some((n) => n.id === "grows"))).toHaveLength(1);
+    expect(renderer.loadFrame.mock.calls.filter(([,n]) => (n as {id:string}).id === "grows")).toHaveLength(1);
+  });
+
+  it("ends the session without charging a retry when a sprite fails, then renders its nodes alone", async () => {
+    const {room,create,render,db} = fixture(true);
+    await create("a"); await create("b");
+    renderer.renderSprite.mockRejectedValueOnce(new Error("sprite timed out")).mockRejectedValueOnce(new Error("sprite timed out"));
+    expect(await render()).toMatchObject({rendered:0,more:true});
+    expect(db.prepare("SELECT node_id, tries FROM node_thumbnails ORDER BY node_id").all()).toEqual([{node_id:"a",tries:0},{node_id:"b",tries:0}]);
+    renderer.renderSprite.mockClear(); renderer.loadFrame.mockClear();
+    await render();
+    for (const id of ["a","b"]) expect(room.node(id)).toMatchObject({thumbRev:room.node(id)!.rev});
+    // Both sprites failed, so both nodes render on their own pages, never in a sprite again.
+    expect(renderer.renderSprite).not.toHaveBeenCalled();
+    expect(renderer.loadFrame.mock.calls.map(([,n])=>(n as {id:string}).id).sort()).toEqual(["a","b"]);
   });
 
   it("shares its browser slot with explicit screenshots", async () => {
