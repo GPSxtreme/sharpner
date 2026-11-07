@@ -92,7 +92,15 @@ const observer=new MutationObserver(update);observer.observe(document.head,{chil
 export function tokenSpecimen(css: string, title = "Design tokens") {
   const tokens = foundations(css);
   const dark = tokens.themes.includes("dark");
-  const themes = dark ? ["dark"] : tokens.themes;
+  // Themes that declare exactly the same values, such as a brand alias of light mode, share one pane named after both.
+  const groups: string[][] = [];
+  for (const theme of dark ? ["dark"] : tokens.themes) {
+    const values = JSON.stringify(Object.entries(tokens.vars[theme] ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+    const same = groups.find((group) => JSON.stringify(Object.entries(tokens.vars[group[0]!] ?? {}).sort(([a], [b]) => a.localeCompare(b))) === values);
+    if (same) same.push(theme); else groups.push([theme]);
+  }
+  const themes = groups.map((group) => group[0]!);
+  const labels = new Map(groups.map((group) => [group[0]!, group.map(themeLabel).join(" · ")]));
   const all = [...tokens.colors, ...tokens.type, ...tokens.spacing, ...tokens.radii, ...tokens.shadows];
   const names = tokenNames(css.replace(/\/\*[\s\S]*?\*\//g, ""));
   const row = (heading: string, items: string[], type = "") => items.length ? `<section class="sp-token-section"><h2>${heading}<span class="sp-token-count">${items.length}</span></h2><div class="sp-token-grid ${type}">${items.join("")}</div></section>` : "";
@@ -113,8 +121,8 @@ export function tokenSpecimen(css: string, title = "Design tokens") {
       row("Shadow", tokens.shadows.filter((token) => token.values[theme]).map((token) => item(token.name.slice(2), `<div class="sp-shadow-stage"><div class="sp-shadow" style="box-shadow:var(${token.name})"></div></div>`))),
     ].filter(Boolean);
     const sheet = sections.join("") || '<p class="sp-empty">Give this system its first decisions.<br>Declare named tokens in an <code>@theme { … }</code> block.</p>';
-    return `<div class="sp-theme${theme === "dark" ? " dark" : ""}" data-theme="${escapeHtml(theme)}">${themes.length > 1 ? `<p class="sp-theme-title">${escapeHtml(themeLabel(theme))}</p>` : ""}${sheet}</div>`;
+    return `<div class="sp-theme${theme === "dark" ? " dark" : ""}" data-theme="${escapeHtml(theme)}">${themes.length > 1 ? `<p class="sp-theme-title">${escapeHtml(labels.get(theme)!)}</p>` : ""}${sheet}</div>`;
   };
-  const html = `${foundationStyles}<article class="sp-foundations"><header class="sp-foundations-header"><h1>${escapeHtml(title)}</h1><span class="sp-foundations-count">${names.length} ${names.length === 1 ? "token" : "tokens"}${themes.length > 1 ? ` · ${themes.length} themes` : ""}</span></header><div class="sp-themes">${themes.map(pane).join("")}</div></article>${tokenValueScript}`;
+  const html = `${foundationStyles}<article class="sp-foundations"><header class="sp-foundations-header"><h1>${escapeHtml(title)}</h1><span class="sp-foundations-count">${names.length} ${names.length === 1 ? "token" : "tokens"}${tokens.themes.length > 1 && !dark ? ` · ${tokens.themes.length} themes` : ""}</span></header><div class="sp-themes">${themes.map(pane).join("")}</div></article>${tokenValueScript}`;
   return dark ? bakeTheme(html, "dark") : html;
 }
