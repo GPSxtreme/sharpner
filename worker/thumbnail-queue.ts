@@ -15,7 +15,8 @@ export class ThumbnailQueue extends DurableObject<Env> {
     super(ctx, env);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS queue (file_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, ready_at INTEGER NOT NULL, turn INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS budgets (id TEXT PRIMARY KEY, day INTEGER NOT NULL, spent INTEGER NOT NULL, turn INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK (id = 1), until_ms INTEGER NOT NULL, token TEXT NOT NULL DEFAULT '');`);
+      CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK (id = 1), until_ms INTEGER NOT NULL, token TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS warm (id INTEGER PRIMARY KEY CHECK (id = 1), session TEXT NOT NULL, until_ms INTEGER NOT NULL);`);
     if (!this.sql.exec<{ name: string }>(`PRAGMA table_info(lease)`).toArray().some((c) => c.name === "token")) this.sql.exec(`ALTER TABLE lease ADD COLUMN token TEXT NOT NULL DEFAULT ''`);
   }
 
@@ -95,8 +96,15 @@ export class ThumbnailQueue extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(now + policy.reservationMs);
       let spent: number = policy.reservationMs;
       let more = true, completed = false, retryAt = now + 30_000;
+      // The browser the previous turn left running, while its keep-alive has time to spare. Turns run one at a
+      // time, so no other turn holds it.
+      const warm = this.sql.exec<{ session: string }>(`SELECT session FROM warm WHERE id = 1 AND until_ms > ?`, now).toArray()[0]?.session;
+      this.sql.exec(`DELETE FROM warm`);
       try {
-        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000, alone ? policy.soloQuantumMs : policy.quantumMs);
+        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000, alone ? policy.soloQuantumMs : policy.quantumMs, warm);
+        // A turn that never opened a browser leaves the warm one as it was.
+        const left = result.warm === undefined ? warm : result.warm;
+        if (left) this.sql.exec(`INSERT OR REPLACE INTO warm VALUES (1, ?, ?)`, left, Date.now() + policy.keepAliveMs - 10_000);
         spent = Math.min(policy.reservationMs, Math.max(0, result.browserMs));
         more = result.more;
         retryAt = result.retryAt ?? Date.now() + 500;

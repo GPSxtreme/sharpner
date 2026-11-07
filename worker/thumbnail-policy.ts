@@ -24,6 +24,9 @@ export const THUMBNAIL_POLICY = {
   // A sprite still running when the quantum ends finishes; a sprite past spriteMs ends the session.
   spriteMs: 20_000,
   sessionMs: 40_000,
+  // A turn leaves its browser running this long for the next turn, which then skips a 1–2 s launch. Idle time is
+  // billed like any browser time, so a burst of edits costs at most this much more.
+  keepAliveMs: 60_000,
   // Browser lifetime is reserved before starting, then refunded to actual elapsed time.
   reservationMs: 60_000,
   screenshotSessionMs: 110_000,

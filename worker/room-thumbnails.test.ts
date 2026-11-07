@@ -6,8 +6,8 @@ import { emptyBrand, type Actor, type NodeInput, type Op, type ServerMsg } from 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class { constructor(readonly ctx: DurableObjectState, readonly env: Env) {} },
 }));
-const renderer = vi.hoisted(() => ({ launch: vi.fn(), loadFrame: vi.fn(), loadImagePreview: vi.fn(), capture: vi.fn(), captureThumbnails: vi.fn(), renderSprite: vi.fn() }));
-vi.mock("@cloudflare/puppeteer", () => ({ default: { launch: renderer.launch } }));
+const renderer = vi.hoisted(() => ({ launch: vi.fn(), connect: vi.fn(), loadFrame: vi.fn(), loadImagePreview: vi.fn(), capture: vi.fn(), captureThumbnails: vi.fn(), renderSprite: vi.fn() }));
+vi.mock("@cloudflare/puppeteer", () => ({ default: { launch: renderer.launch, connect: renderer.connect } }));
 vi.mock("./render", async (original) => ({ ...await original<typeof import("./render")>(), loadFrame: renderer.loadFrame, loadImagePreview: renderer.loadImagePreview, capture: renderer.capture, captureThumbnails: renderer.captureThumbnails }));
 vi.mock("./render-sprite", async (original) => ({ ...await original<typeof import("./render-sprite")>(), renderSprite: renderer.renderSprite }));
 /** A sprite renders its nodes the way single renders do, so the loadFrame mock sees every node either way. */
@@ -30,6 +30,7 @@ beforeEach(() => {
   renderer.capture.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]));
   renderer.captureThumbnails.mockReset().mockResolvedValue({ lo: new Uint8Array([1]), hi: new Uint8Array([2]) });
   renderer.renderSprite.mockReset().mockImplementation(spriteOfSingles);
+  renderer.connect.mockReset();
 });
 const member: Actor = { id: "alice", name: "Alice", avatar: null };
 
@@ -268,6 +269,22 @@ describe("thumbnail scheduling", () => {
     expect(renderer.loadFrame.mock.calls.at(-1)![1]).toMatchObject({id:"screen",html:expect.stringContaining("Latest")});
   });
 
+  it("renders the first edit after a quiet spell at once, and waits out a burst", async () => {
+    const {room,create,apply,enqueue} = fixture(true);
+    await create("screen");
+    // The screen was created long ago; nothing has changed since.
+    room["setMeta"]("thumbEditAt", String(Date.now() - 5000));
+    enqueue.mockClear();
+    await apply([{t:"node.put",id:"screen",node:{source:"<p>Quiet edit</p>"}}]);
+    const [, readyAt] = enqueue.mock.calls.at(-1)! as unknown as [string, number];
+    expect(readyAt).toBeLessThanOrEqual(Date.now());
+    expect(await room.renderThumbnails()).toMatchObject({rendered:1,more:false});
+    // A second edit right after the first waits for the burst to pause.
+    await apply([{t:"node.put",id:"screen",node:{source:"<p>Burst edit</p>"}}]);
+    expect((enqueue.mock.calls.at(-1)! as unknown as [string, number])[1]).toBeGreaterThan(Date.now() + 1000);
+    expect(await room.renderThumbnails()).toMatchObject({rendered:0,more:true});
+  });
+
   it("re-renders a screen that uses a component an agent edited, with nobody viewing", async () => {
     const {room,create,apply,stopViewing,db,render} = fixture(true);
     await create("button",{kind:"component",name:"Button",source:"<button>Old</button>"});
@@ -349,6 +366,53 @@ describe("thumbnail scheduling", () => {
     // Both sprites failed, so both nodes render on their own pages, never in a sprite again.
     expect(renderer.renderSprite).not.toHaveBeenCalled();
     expect(renderer.loadFrame.mock.calls.map(([,n])=>(n as {id:string}).id).sort()).toEqual(["a","b"]);
+  });
+
+  describe("warm browser", () => {
+    function session(id: string) {
+      const pages: { close: ReturnType<typeof vi.fn> }[] = [];
+      const browser = { newPage: vi.fn(async () => { const page = { close: vi.fn(async () => {}) }; pages.push(page); return page; }),
+        close: vi.fn(async () => {}), disconnect: vi.fn(async () => {}), sessionId: () => id };
+      return { browser, pages };
+    }
+
+    it("leaves its browser running for the next turn, which reconnects instead of launching", async () => {
+      const {room,create,apply,db} = fixture(true);
+      const {browser, pages} = session("warm-1");
+      renderer.launch.mockResolvedValue(browser); renderer.connect.mockResolvedValue(browser);
+      await create("screen");
+      db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+      expect(await room.renderThumbnails()).toMatchObject({rendered:1,warm:"warm-1"});
+      // Its own pages close; the browser stays.
+      expect(pages.map((p) => p.close.mock.calls.length)).toEqual([1]);
+      expect(browser.disconnect).toHaveBeenCalledTimes(1);
+      expect(browser.close).not.toHaveBeenCalled();
+      await apply([{t:"node.put",id:"screen",node:{source:"<p>Edited</p>"}}]);
+      db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+      expect(await room.renderThumbnails(undefined, undefined, "warm-1")).toMatchObject({rendered:1,warm:"warm-1"});
+      expect(renderer.connect).toHaveBeenCalledWith(expect.anything(), "warm-1");
+      expect(renderer.launch).toHaveBeenCalledTimes(1);
+    });
+
+    it("launches when the warm browser is gone, and closes a browser that had a failed sprite", async () => {
+      const {room,create,db} = fixture(true);
+      const {browser} = session("fresh");
+      renderer.connect.mockRejectedValue(new Error("session closed"));
+      renderer.launch.mockResolvedValue(browser);
+      renderer.renderSprite.mockRejectedValueOnce(new Error("sprite timed out"));
+      await create("screen");
+      db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+      expect(await room.renderThumbnails(undefined, undefined, "gone")).toMatchObject({rendered:0,warm:null});
+      expect(renderer.launch).toHaveBeenCalledTimes(1);
+      expect(browser.close).toHaveBeenCalledTimes(1);
+      expect(browser.disconnect).not.toHaveBeenCalled();
+    });
+
+    it("reports no browser when the turn had nothing to render", async () => {
+      const {room} = fixture(true);
+      expect((await room.renderThumbnails(undefined, undefined, "warm-1")).warm).toBeUndefined();
+      expect(renderer.connect).not.toHaveBeenCalled();
+    });
   });
 
   it("shares its browser slot with explicit screenshots", async () => {

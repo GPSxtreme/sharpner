@@ -5,6 +5,7 @@ import { fileFor, room } from "./data";
 import { prepareRenderDesign } from "./render-fonts";
 import { bytesToBase64, capture, captureThumbnails, loadFrame, loadImagePreview, withTimeout } from "./render";
 import { planSprites, renderSprite, type SpritePhases } from "./render-sprite";
+import { openBrowser, releaseBrowser } from "./browser-session";
 import { selectThumbnail, type ThemeThumbnails } from "../shared/thumbnails";
 import { imagePreviewFor } from "../shared/image-preview";
 import { sourceBatches, type SourceItem } from "../shared/source-batches";
@@ -36,6 +37,8 @@ type Attachment = {
 const VIEWER: Actor = { id: "link-viewer", name: "Viewer", avatar: null };
 type NodeRow = Omit<CanvasNode, "thumbnails"> & { thumbnails: string };
 type BrowserTab = Awaited<ReturnType<Awaited<ReturnType<typeof puppeteer.launch>>["newPage"]>>;
+/** What one automatic turn did; see FileRoom.renderThumbnails. */
+export type TurnResult = { more: boolean; browserMs: number; rendered: number; retryAt?: number; warm?: string | null };
 
 const MAX_SOURCE = 1_000_000;
 const THUMB_DELAY = THUMBNAIL_POLICY.debounceMs;
@@ -862,8 +865,15 @@ export class FileRoom extends DurableObject<Env> {
     await this.libraryInfo();
     this.reconcileMigrated();
     if (!this.hasPendingThumbnails()) return;
-    const readyAt = debounce ? Date.now() + THUMB_DELAY : Number(this.meta("thumbAfter") ?? 0);
-    if (debounce) this.setMeta("thumbAfter", String(readyAt));
+    let readyAt = Number(this.meta("thumbAfter") ?? 0);
+    if (debounce) {
+      // The first edit after a quiet spell renders at once. An edit within the debounce of the previous one waits
+      // until the burst pauses, so a burst renders its first and last states rather than every step between.
+      const now = Date.now(), previous = Number(this.meta("thumbEditAt") ?? 0);
+      this.setMeta("thumbEditAt", String(now));
+      readyAt = now - previous >= THUMB_DELAY ? now : now + THUMB_DELAY;
+      this.setMeta("thumbAfter", String(readyAt));
+    }
     await this.env.THUMBNAIL_QUEUE.get(this.env.THUMBNAIL_QUEUE.idFromName("global")).enqueue(fileId, readyAt);
   }
 
@@ -917,10 +927,14 @@ export class FileRoom extends DurableObject<Env> {
     ).toArray()[0]!.n;
   }
 
-  /** One bounded fair turn, one browser for the file's entire queue. Called only by ThumbnailQueue. */
-  async renderThumbnails(notAfter = Date.now() + 20_000, quantumMs: number = THUMBNAIL_POLICY.quantumMs): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
+  /**
+   * One bounded fair turn, one browser for the file's entire queue. Called only by ThumbnailQueue. `warm` is the
+   * browser session the previous turn left running; `warm` in the result is the session this turn leaves, null when
+   * it left none, and absent when it never opened a browser.
+   */
+  async renderThumbnails(notAfter = Date.now() + 20_000, quantumMs: number = THUMBNAIL_POLICY.quantumMs, warm?: string): Promise<TurnResult> {
     if (this.browserTask) return { more: true, browserMs: 0, rendered: 0 };
-    return this.withFileBrowser(() => this.renderThumbnailsNow(notAfter, Math.min(quantumMs, THUMBNAIL_POLICY.soloQuantumMs)));
+    return this.withFileBrowser(() => this.renderThumbnailsNow(notAfter, Math.min(quantumMs, THUMBNAIL_POLICY.soloQuantumMs), warm));
   }
 
   private async withFileBrowser<T>(run: () => Promise<T>): Promise<T> {
@@ -980,7 +994,7 @@ export class FileRoom extends DurableObject<Env> {
     } finally { this.screenshotRequests--; }
   }
 
-  private async renderThumbnailsNow(notAfter: number, quantumMs: number): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
+  private async renderThumbnailsNow(notAfter: number, quantumMs: number, warm?: string): Promise<TurnResult> {
     const fileId = this.meta("fileId"), base = this.meta("origin") ?? "";
     if (!this.env.BROWSER || !fileId || !this.hasRenderAudience()) return { more: false, browserMs: 0, rendered: 0 };
     const readyAt = Number(this.meta("thumbAfter") ?? 0);
@@ -996,20 +1010,28 @@ export class FileRoom extends DurableObject<Env> {
     }
     const tabCount = Math.min(THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
     const started = Date.now();
-    let rendered = 0, launchMs = 0, sprites = 0, alone = 0;
-    const phases: SpritePhases = { load: 0, settle: 0, capture: 0, encode: 0 };
+    let rendered = 0, launchMs = 0, sprites = 0, alone = 0, reused = false;
+    const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0 };
     let retryAt: number | undefined;
     let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+    let left: string | undefined;
+    // Pages this turn opened, and whether the browser can stay warm for the next turn.
+    const opened: BrowserTab[] = [];
+    let healthy = true;
     let stopped = false;
     const valid = () => !stopped;
     // Stop while an edit's debounce is pending; without I/O, Date.now() cannot advance past it.
     const due = () => !stopped && Date.now() - started < quantumMs && Date.now() >= Number(this.meta("thumbAfter") ?? 0) && this.hasRenderAudience();
     try {
       const run = async () => {
-        browser = await puppeteer.launch(this.env.BROWSER!, { keep_alive: 10_000 });
+        const session = await openBrowser(this.env.BROWSER!, warm, THUMBNAIL_POLICY.keepAliveMs);
+        reused = session.reused;
         launchMs = Date.now() - started;
-        if (stopped) { await browser.close(); return; }
+        // The session deadline passed while connecting; the cleanup below has already run.
+        if (stopped) { await session.browser.close().catch(() => {}); return; }
+        browser = session.browser;
         const tabs = new Set(await Promise.all(Array.from({ length: Math.max(1, tabCount) }, () => browser!.newPage())));
+        opened.push(...tabs);
         // Re-query between batches so edits supersede queued work.
         while (due() && tabs.size) {
           // A design change bumps the revision of every node it affects, so a render of any other node stays
@@ -1035,13 +1057,13 @@ export class FileRoom extends DurableObject<Env> {
                 const result = await this.renderSpriteThumbs(tab, w.jobs, fileId, base, design, valid, phases);
                 // A failed sprite may leave its page wedged, so that tab retires; the other tabs keep going, and
                 // the failed sprite's nodes render alone.
-                if (result === false) { tabs.delete(tab); break; }
+                if (result === false) { tabs.delete(tab); healthy = false; break; }
                 rendered += result;
                 continue;
               }
               alone++;
               // A timed-out tab is never reused; close the whole session before retrying.
-              if (!await this.renderThumb(tab, w.jobs[0]!, fileId, base, design, valid)) { stopped = true; break; }
+              if (!await this.renderThumb(tab, w.jobs[0]!, fileId, base, design, valid)) { stopped = true; healthy = false; break; }
               rendered++;
               this.broadcast({ type: "sync", nodes: this.nodes([w.jobs[0]!.id]), by: null });
             }
@@ -1051,19 +1073,20 @@ export class FileRoom extends DurableObject<Env> {
       await withTimeout(run(), THUMBNAIL_POLICY.sessionMs, "thumbnail session");
     } catch (err) {
       retryAt = Date.now() + 30_000;
+      healthy = false;
       console.warn("thumbnail session failed", String(err));
     } finally {
       stopped = true;
-      if (browser) await withTimeout(browser.close(), 5000, "browser close");
+      if (browser) left = await releaseBrowser(browser, opened, healthy);
     }
     const browserMs = Date.now() - started;
     // `pending` previews still trail their node's revision after this turn; 0 means the file is in sync.
     const pending = this.pendingCount();
-    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, pending, sprites, alone, browserMs, launchMs, quantumMs, phases }));
+    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, pending, sprites, alone, browserMs, launchMs, reused, warm: !!left, quantumMs, phases }));
     this.updateCover(fileId);
     const more = pending > 0;
     if (!more && this.backfill()) { this.setMeta("backfill", ""); console.log("thumbnail-backfill-done", JSON.stringify({ fileId })); }
-    return { more: more && this.hasRenderAudience(), browserMs, rendered, retryAt };
+    return { more: more && this.hasRenderAudience(), browserMs, rendered, retryAt, warm: browser ? left ?? null : undefined };
   }
 
   /**
