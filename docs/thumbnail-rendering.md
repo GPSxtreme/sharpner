@@ -179,6 +179,28 @@ render. Single-page captures were the limiter: Puppeteer serializes screenshots 
 a browser context and brings each tab to the front, about 150 ms per capture with four
 tabs against 40 ms with one. Sprites take one capture per sprite.
 
+### Production, 7 Nov 2026
+
+Sharpner production, one test file of a token sheet, 16 components and 12 screens (9 at
+1280px and 390px, 3 auto-height at 1440px). Times run from the end of the MCP edit's
+FileRoom apply to the end of the turn that left `pending: 0`, from `wrangler tail`. One
+or two runs per release, so these show the direction rather than settle a number;
+production runs vary by about a third. The single-page path was not measured in
+production before sprites shipped.
+
+| Release | `Button/Primary`, 14 previews | Token sheet, 29 previews | Launch or reconnect |
+| --- | ---: | ---: | ---: |
+| Sprites (#52) | 5.7, 7.7 s | 15.2 s | 1.0–2.3 s |
+| First edit at once, warm browser (#53) | 5.2, 5.4 s warm; 7.5 s cold | 8.8 s | 74–106 ms warm |
+| Font subsets (#55) | 6.2 s warm; 7.9 s cold | | 0.6 s warm |
+| Own context per tab (#56) | 5.6 s warm; 6.8 s cold | | 79 ms warm |
+
+Font pruning cut what a turn sends from 4.9 MB to 1.3 MB and its summed load time from
+5.5–5.9 s to 3.2–3.5 s; before it, 70% of load was transfer. The Worker spends only
+130–350 ms of CPU per turn, so turns are bound by the browser and the transfer to it.
+Half an hour later every turn took about 10 seconds whatever its layout; see the A/B
+above.
+
 Fidelity: eleven edge-case documents (viewport units, a fixed bar, a script, an
 overflowing fixed-height frame, root `rem`, a media query, a CSS background image, a
 dark `color-scheme` root, a viewport-high hero, and 1440px fixed and auto frames)
