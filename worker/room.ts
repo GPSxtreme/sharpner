@@ -4,6 +4,7 @@ import { clerkIssuer } from "./auth";
 import { fileFor, room } from "./data";
 import { prepareRenderDesign } from "./render-fonts";
 import { bytesToBase64, capture, captureThumbnails, loadFrame, loadImagePreview, withTimeout } from "./render";
+import { planSprites, renderSprite, type SpritePhases } from "./render-sprite";
 import { selectThumbnail, type ThemeThumbnails } from "../shared/thumbnails";
 import { imagePreviewFor } from "../shared/image-preview";
 import { sourceBatches, type SourceItem } from "../shared/source-batches";
@@ -42,6 +43,8 @@ const THUMB_DELAY = THUMBNAIL_POLICY.debounceMs;
 const THUMB_BATCH = THUMBNAIL_POLICY.batch;
 const THUMB_TABS = THUMBNAIL_POLICY.tabs;
 const THUMB_MAX_TRIES = THUMBNAIL_POLICY.maxTries;
+/** Node revisions that render on their own page: they did not fit a sprite, or were in one that failed. */
+const MAX_SOLO = 500;
 // `layout` is 'auto' on every section. It stays in node metadata for tabs loaded before that, which read it.
 const META_COLS = `nodes.id AS id, page_id AS pageId, parent_id AS parentId, kind, name, x, y, layout, d.text AS description, sort AS 'order', width, height, measured_h AS measuredHeight,
   src, thumb_lo AS thumbLo, thumb_hi AS thumbHi, rev, thumb_rev AS thumbRev, thumb_theme AS thumbTheme,
@@ -884,9 +887,9 @@ export class FileRoom extends DurableObject<Env> {
   private pendingThumbnails(limit: number = THUMB_BATCH, design?: DesignSystem) {
     return this.sql.exec<{
       id: string; kind: NodeKind; name: string; source: string; src: string | null;
-      width: number; height: number | null; rev: number;
+      width: number; height: number | null; rev: number; measuredHeight: number | null;
     }>(
-      `SELECT n.id, n.kind, n.name, n.source, n.src, n.width, n.height, n.rev
+      `SELECT n.id, n.kind, n.name, n.source, n.src, n.width, n.height, n.rev, n.measured_h AS measuredHeight
        FROM nodes n JOIN node_thumbnails t ON t.node_id = n.id AND t.rev = n.rev
        WHERE t.thumb_lo IS NULL AND t.tries < ${THUMB_MAX_TRIES}
          AND t.theme = '' AND (? OR n.id = ?)
@@ -904,6 +907,15 @@ export class FileRoom extends DurableObject<Env> {
   }
 
   private hasPendingThumbnails() { return !!this.pendingThumbnails(1).length || !!this.pendingImages(1).length; }
+
+  /** Previews that will still render: behind their node's revision and under the retry cap. */
+  private pendingCount() {
+    return this.sql.exec<{ n: number }>(
+      `SELECT (SELECT count(*) FROM nodes n JOIN node_thumbnails t ON t.node_id = n.id AND t.rev = n.rev
+         WHERE t.thumb_lo IS NULL AND t.tries < ${THUMB_MAX_TRIES} AND t.theme = '')
+       + (SELECT count(*) FROM nodes WHERE ${PENDING_IMAGES}) AS n`,
+    ).toArray()[0]!.n;
+  }
 
   /** One bounded fair turn, one browser for the file's entire queue. Called only by ThumbnailQueue. */
   async renderThumbnails(notAfter = Date.now() + 20_000, quantumMs: number = THUMBNAIL_POLICY.quantumMs): Promise<{ more: boolean; browserMs: number; rendered: number; retryAt?: number }> {
@@ -973,9 +985,9 @@ export class FileRoom extends DurableObject<Env> {
     if (!this.env.BROWSER || !fileId || !this.hasRenderAudience()) return { more: false, browserMs: 0, rendered: 0 };
     const readyAt = Number(this.meta("thumbAfter") ?? 0);
     if (Date.now() < readyAt) return { more: true, browserMs: 0, rendered: 0 };
-    const designRev = this.meta("designRev");
-    const design = await prepareRenderDesign(await this.designSystem());
-    if (Date.now() > notAfter || this.meta("designRev") !== designRev) return { more: true, browserMs: 0, rendered: 0 };
+    let designRev = this.meta("designRev");
+    let design = await prepareRenderDesign(await this.designSystem());
+    if (Date.now() > notAfter) return { more: true, browserMs: 0, rendered: 0 };
     // Edits and library refreshes reconcile when they happen; only the migration backfill remains.
     this.reconcileMigrated();
     if (!this.hasPendingThumbnails()) {
@@ -984,30 +996,54 @@ export class FileRoom extends DurableObject<Env> {
     }
     const tabCount = Math.min(THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
     const started = Date.now();
-    let rendered = 0, launchMs = 0;
+    let rendered = 0, launchMs = 0, sprites = 0, alone = 0;
+    const phases: SpritePhases = { load: 0, settle: 0, capture: 0, encode: 0 };
     let retryAt: number | undefined;
     let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
     let stopped = false;
+    const valid = () => !stopped;
+    // Stop while an edit's debounce is pending; without I/O, Date.now() cannot advance past it.
+    const due = () => !stopped && Date.now() - started < quantumMs && Date.now() >= Number(this.meta("thumbAfter") ?? 0) && this.hasRenderAudience();
     try {
       const run = async () => {
         browser = await puppeteer.launch(this.env.BROWSER!, { keep_alive: 10_000 });
         launchMs = Date.now() - started;
         if (stopped) { await browser.close(); return; }
-        const tabs = await Promise.all(Array.from({ length: Math.max(1, tabCount) }, () => browser!.newPage()));
+        const tabs = new Set(await Promise.all(Array.from({ length: Math.max(1, tabCount) }, () => browser!.newPage())));
         // Re-query between batches so edits supersede queued work.
-        // Stop while an edit's debounce is pending; without I/O, Date.now() cannot advance past it.
-        while (!stopped && Date.now() - started < quantumMs && Date.now() >= Number(this.meta("thumbAfter") ?? 0)
-          && this.hasRenderAudience() && this.meta("designRev") === designRev) {
+        while (due() && tabs.size) {
+          // A design change bumps the revision of every node it affects, so a render of any other node stays
+          // valid and a stale one is dropped by its revision check. Later batches render against the new design.
+          if (this.meta("designRev") !== designRev) {
+            designRev = this.meta("designRev");
+            design = await prepareRenderDesign(await this.designSystem());
+            if (!due()) break;
+          }
           const queue = this.pendingThumbnails(THUMB_BATCH, design);
-          const jobs = [...queue, ...this.pendingImages(THUMB_BATCH - queue.length)];
-          if (!jobs.length) break;
-          await Promise.all(tabs.map(async (tab) => {
-            for (let n = jobs.shift(); n && !stopped; n = jobs.shift()) {
-              if (!this.hasRenderAudience() || Date.now() < Number(this.meta("thumbAfter") ?? 0) || Date.now() - started >= quantumMs) break;
+          const images = this.pendingImages(THUMB_BATCH - queue.length);
+          if (!queue.length && !images.length) break;
+          const solo = this.soloNodes();
+          const single = queue.filter((n) => solo.has(`${n.id}:${n.rev}`));
+          const work = [
+            ...planSprites(queue.filter((n) => !solo.has(`${n.id}:${n.rev}`)), tabs.size).map((jobs) => ({ jobs, sprite: true })),
+            ...[...single, ...images].map((n) => ({ jobs: [n], sprite: false })),
+          ];
+          await Promise.all([...tabs].map(async (tab) => {
+            for (let w = work.shift(); w && due(); w = work.shift()) {
+              if (w.sprite) {
+                sprites++;
+                const result = await this.renderSpriteThumbs(tab, w.jobs, fileId, base, design, valid, phases);
+                // A failed sprite may leave its page wedged, so that tab retires; the other tabs keep going, and
+                // the failed sprite's nodes render alone.
+                if (result === false) { tabs.delete(tab); break; }
+                rendered += result;
+                continue;
+              }
+              alone++;
               // A timed-out tab is never reused; close the whole session before retrying.
-              if (!await this.renderThumb(tab, n, fileId, base, design, () => !stopped && this.meta("designRev") === designRev)) { stopped = true; break; }
+              if (!await this.renderThumb(tab, w.jobs[0]!, fileId, base, design, valid)) { stopped = true; break; }
               rendered++;
-              this.broadcast({ type: "sync", nodes: this.nodes([n.id]), by: null });
+              this.broadcast({ type: "sync", nodes: this.nodes([w.jobs[0]!.id]), by: null });
             }
           }));
         }
@@ -1021,11 +1057,61 @@ export class FileRoom extends DurableObject<Env> {
       if (browser) await withTimeout(browser.close(), 5000, "browser close");
     }
     const browserMs = Date.now() - started;
-    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, browserMs, launchMs, quantumMs }));
+    // `pending` previews still trail their node's revision after this turn; 0 means the file is in sync.
+    const pending = this.pendingCount();
+    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, pending, sprites, alone, browserMs, launchMs, quantumMs, phases }));
     this.updateCover(fileId);
-    const more = this.hasPendingThumbnails();
+    const more = pending > 0;
     if (!more && this.backfill()) { this.setMeta("backfill", ""); console.log("thumbnail-backfill-done", JSON.stringify({ fileId })); }
     return { more: more && this.hasRenderAudience(), browserMs, rendered, retryAt };
+  }
+
+  /**
+   * Renders one sprite of frames, components and token sheets and records each capture. Nodes the sprite could
+   * not hold render alone later. Returns how many previews it recorded, or false when its page should retire.
+   */
+  private async renderSpriteThumbs(
+    tab: BrowserTab,
+    jobs: { id: string; kind: NodeKind; src: string | null; html: string; width: number; height: number | null; rev: number; measuredHeight?: number | null }[],
+    fileId: string,
+    base: string,
+    design: Awaited<ReturnType<typeof prepareRenderDesign>>,
+    valid: () => boolean,
+    phases: SpritePhases,
+  ): Promise<number | false> {
+    let result: Awaited<ReturnType<typeof renderSprite>>;
+    try {
+      result = await withTimeout(renderSprite(tab, jobs, base, design), THUMBNAIL_POLICY.spriteMs, "sprite");
+    } catch (err) {
+      console.warn("thumbnail sprite failed", jobs.length, String(err));
+      // A session that is closing aborts its sprites; that says nothing about their nodes.
+      if (valid()) this.markSolo(jobs);
+      return false;
+    }
+    for (const [phase, ms] of Object.entries(result.phases) as [keyof SpritePhases, number][]) phases[phase] += ms;
+    const stored: string[] = [];
+    for (const [id, shot] of result.captured) {
+      const n = jobs.find((job) => job.id === id)!;
+      try {
+        if (await this.storeThumb(n, { measured: shot.measured, lo: shot.lo, hi: shot.hi }, fileId, valid)) stored.push(id);
+      } catch (err) { console.warn("thumbnail store failed", id, String(err)); }
+    }
+    if (result.fallback.length) this.markSolo(jobs.filter((job) => result.fallback.includes(job.id)));
+    // Publish the sprite's previews together, as soon as they are recorded.
+    if (stored.length) this.broadcast({ type: "sync", nodes: this.nodes(stored), by: null });
+    return stored.length;
+  }
+
+  private soloNodes() {
+    try { return new Set(JSON.parse(this.meta("thumbSolo") || "[]") as string[]); }
+    catch { return new Set<string>(); }
+  }
+
+  /** Keeps only revisions still waiting for a preview, newest last, within MAX_SOLO. */
+  private markSolo(nodes: { id: string; rev: number }[]) {
+    const current = new Set(this.pendingThumbnails(THUMB_BATCH * 8).map((n) => `${n.id}:${n.rev}`));
+    const keys = [...this.soloNodes(), ...nodes.map((n) => `${n.id}:${n.rev}`)].filter((key) => current.has(key));
+    this.setMeta("thumbSolo", JSON.stringify([...new Set(keys)].slice(-MAX_SOLO)));
   }
 
   /** Renders one node's lo/hi thumbnails into R2 and records them. Returns false if it failed or the node is gone. */
@@ -1037,17 +1123,41 @@ export class FileRoom extends DurableObject<Env> {
     design: DesignSystem,
     valid: () => boolean,
   ) {
-    let uploaded: string[] = [];
     try {
-      const { measured, lo, hi } = await withTimeout((async () => {
+      const shot = await withTimeout((async () => {
         if (n.kind === "image") {
           const size = await loadImagePreview(tab, n.src!, base);
           return { measured: null, lo: await capture(tab, size.width, size.height, { type: "webp", scale: 1, quality: 70, transparent: true }), hi: null };
         }
         const size = await loadFrame(tab, n, base, design);
-        return { ...size, ...await captureThumbnails(tab, size.width, size.height) };
+        return { measured: size.measured, ...await captureThumbnails(tab, size.width, size.height) };
       })(), 30_000, "render");
+      return await this.storeThumb(n, shot, fileId, valid);
+    } catch (err) {
+      console.warn("thumbnail failed", n.id, String(err));
+      // A session timeout closes the browser under in-flight renders; that is not the node's fault.
       if (!valid()) return false;
+      // Retried on later alarms, up to THUMB_MAX_TRIES per revision.
+      if (n.kind === "image") this.sql.exec(`UPDATE nodes SET thumb_tries = thumb_tries + 1 WHERE id = ? AND rev = ?`, n.id, n.rev);
+      else this.sql.exec(`UPDATE node_thumbnails SET tries = tries + 1 WHERE node_id = ? AND theme = '' AND rev = ?`, n.id, n.rev);
+      return false;
+    }
+  }
+
+  /**
+   * Uploads one node's captured previews to R2 and records them, unless the session ended or an edit superseded
+   * the revision meanwhile. Returns false when nothing was recorded; throws when an upload failed.
+   */
+  private async storeThumb(
+    n: { id: string; kind: NodeKind; src: string | null; rev: number },
+    shot: { measured: number | null; lo: Uint8Array; hi: Uint8Array | null },
+    fileId: string,
+    valid: () => boolean,
+  ) {
+    if (!valid()) return false;
+    const { measured, lo, hi } = shot;
+    let uploaded: string[] = [];
+    try {
       // Attempt-specific immutable keys keep a timed-out upload from overwriting/deleting a retry.
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(crypto.randomUUID()));
       const themeKey = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1085,13 +1195,7 @@ export class FileRoom extends DurableObject<Env> {
       return true;
     } catch (err) {
       if (uploaded.length) this.ctx.waitUntil(this.env.FILES.delete(uploaded));
-      console.warn("thumbnail failed", n.id, String(err));
-      // A session timeout or design change closes the browser under in-flight renders; that is not the node's fault.
-      if (!valid()) return false;
-      // Retried on later alarms, up to THUMB_MAX_TRIES per revision.
-      if (n.kind === "image") this.sql.exec(`UPDATE nodes SET thumb_tries = thumb_tries + 1 WHERE id = ? AND rev = ?`, n.id, n.rev);
-      else this.sql.exec(`UPDATE node_thumbnails SET tries = tries + 1 WHERE node_id = ? AND theme = '' AND rev = ?`, n.id, n.rev);
-      return false;
+      throw err;
     }
   }
 

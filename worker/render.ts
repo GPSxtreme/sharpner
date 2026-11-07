@@ -3,11 +3,13 @@ import { thumbnailCss } from "./thumbnail-css";
 import { frameDocument } from "../shared/types";
 import type { RenderDesign } from "./render-fonts";
 
-const MAX_HEIGHT = 8000;
+export const MAX_HEIGHT = 8000;
 /** Viewport height an auto-height frame first lays out in, before it is fitted to its content. */
-const AUTO_VIEWPORT = 800;
+export const AUTO_VIEWPORT = 800;
 /** Layout passes allowed to fit that viewport to content that keeps changing with it. */
-const FIT_PASSES = 3;
+export const FIT_PASSES = 3;
+/** Width the sharp preview tier is captured at, at most; narrower frames are never enlarged. */
+export const hiScale = (width: number) => Math.min(1, 1280 / width);
 
 /** Chunked encoding avoids argument/stack limits for large captures. */
 export function bytesToBase64(bytes: Uint8Array) {
@@ -17,7 +19,7 @@ export function bytesToBase64(bytes: Uint8Array) {
 }
 
 /** Like @tailwindcss/browser, a stylesheet that fails to compile contributes no CSS instead of failing the capture. */
-const tailwindCss = (input: string, candidates: string[]) => thumbnailCss(input, candidates).catch((err) => {
+export const tailwindCss = (input: string, candidates: string[]) => thumbnailCss(input, candidates).catch((err) => {
   console.warn("tailwind compile failed", String(err));
   return "";
 });
@@ -34,10 +36,7 @@ export async function loadFrame(page: BrowserPage, f: { html: string; width: num
   const width = Math.max(1, Math.round(f.width));
   // Seed styles before navigation, so fonts and CSS images load alongside document resources.
   // The DOM pass below covers classes/styles produced by props, slots and authored scripts.
-  const initial = frameDocument(f.html, { base, design, compiledTailwind: true, fontCss: design.fonts });
-  const cssSource = [...initial.matchAll(/<style\b[^>]*type=["']text\/tailwindcss["'][^>]*>([\s\S]*?)<\/style>/gi)].map((match) => match[1]).join("\n");
-  const sources = [f.html, ...design.components.map((c) => c.html)].join("\n");
-  const candidates = [...sources.matchAll(/\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].flatMap((match) => (match[1] ?? match[2] ?? match[3]!).split(/\s+/));
+  const { cssSource, candidates } = seedInput(f.html, base, design);
   const seedCss = await tailwindCss(cssSource, candidates);
   // Fresh windows prevent custom element definitions and authored scripts leaking between nodes.
   await page.goto("about:blank");
@@ -82,6 +81,18 @@ export async function loadFrame(page: BrowserPage, f: { html: string; width: num
   return { width, measured, height: Math.min(MAX_HEIGHT, Math.max(1, Math.round(f.height ?? measured))) };
 }
 
+/**
+ * What a document's first Tailwind pass compiles: its authored `text/tailwindcss` styles (tokens included) and the
+ * classes written in its source and in the component definitions it may expand.
+ */
+export function seedInput(html: string, base: string, design: RenderDesign) {
+  const initial = frameDocument(html, { base, design, compiledTailwind: true });
+  const cssSource = [...initial.matchAll(/<style\b[^>]*type=["']text\/tailwindcss["'][^>]*>([\s\S]*?)<\/style>/gi)].map((match) => match[1]).join("\n");
+  const sources = [html, ...design.components.map((c) => c.html)].join("\n");
+  const candidates = [...sources.matchAll(/\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].flatMap((match) => (match[1] ?? match[2] ?? match[3]!).split(/\s+/));
+  return { cssSource, candidates };
+}
+
 /** Resizes the viewport to the content height until the content stops changing with it, and returns that height. */
 async function fitViewport(page: BrowserPage, width: number, measured: number) {
   const measure = () => page.evaluate(() => Math.ceil(document.body.getBoundingClientRect().height));
@@ -99,12 +110,12 @@ async function fitViewport(page: BrowserPage, width: number, measured: number) {
   return measure();
 }
 
-export async function capture(page: BrowserPage, width: number, height: number, opts: { type: "jpeg" | "webp"; scale: number; quality?: number; transparent?: boolean }) {
+export async function capture(page: BrowserPage, width: number, height: number, opts: { type: "jpeg" | "webp"; scale: number; quality?: number; transparent?: boolean; x?: number; y?: number; beyondViewport?: boolean }) {
   return (await page.screenshot({
     type: opts.type,
     quality: opts.quality ?? 80,
-    clip: { x: 0, y: 0, width, height, scale: opts.scale },
-    captureBeyondViewport: true,
+    clip: { x: opts.x ?? 0, y: opts.y ?? 0, width, height, scale: opts.scale },
+    captureBeyondViewport: opts.beyondViewport ?? true,
     omitBackground: opts.transparent ?? false,
   })) as Uint8Array;
 }
@@ -148,7 +159,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise
 
 /** Capture layout once; derive overview pixels from the hi raster without a second browser screenshot. */
 export async function captureThumbnails(page: BrowserPage, width: number, height: number) {
-  const hi = await capture(page, width, height, { type: "webp", scale: Math.min(1, 1280 / width) });
+  const hi = await capture(page, width, height, { type: "webp", scale: hiScale(width) });
   if (width <= 256) return { lo: hi, hi };
   // Chunk encoding avoids argument/stack limits for tall captures.
   const encoded = bytesToBase64(hi);

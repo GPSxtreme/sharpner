@@ -38,10 +38,11 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 | Policy | Default |
 | --- | ---: |
 | Automatic browsers, across the deployment | 1 |
-| Browser tabs in a turn | 4 |
+| Browser tabs in a turn | 4, each rendering one sprite at a time |
+| Nodes per batch / per sprite | 96 / 24 |
 | Edit debounce | 1.2 seconds |
-| Fair turn / hard session deadline | 8 / 20 seconds; 15 seconds when no other file can run |
-| Reserved time before admission | 45 seconds, refunded to measured elapsed time |
+| Fair turn / sprite deadline / hard session deadline | 8 / 20 / 40 seconds; the turn is 15 seconds when no other file can run |
+| Reserved time before admission | 60 seconds, refunded to measured elapsed time |
 | Daily automatic browser time per file, per workspace, globally and for `BACKFILL` files | Lifted on 4 Nov 2026: about 11.5 days each, so never reached. Spend is still recorded. Earlier values were 30 minutes, 1 hour, 4 hours and 1 hour. |
 | Queued files | 1,000 |
 | Attempts per node revision | 3 |
@@ -49,7 +50,7 @@ canvas derives the overview tier. Frames no wider than 256px share one object.
 The shared Durable Object rotates workspaces, then files. Files in the temporary
 `BACKFILL` set wait behind every file someone is viewing. A busy file keeps one
 browser session across its batches until its fair turn expires; it does not
-launch another browser per 24 nodes or retain an idle browser between turns.
+launch another browser per batch or retain an idle browser between turns.
 Persistent leases and conservative reservations protect admission across
 restarts and failures. Explicit `screenshot_nodes` requests use the same browser
 slot and the file's serialized browser work, with bounded waiting and session
@@ -63,7 +64,9 @@ No automatic browser launches for a file without an active, unexpired viewing
 socket. Explicitly selecting an uncached cover is an exception: only its current
 pair renders, through the same budget, and the request clears when it lands.
 A new page presence resumes a file's other pending work. Rapid changes are coalesced;
-revisions and a design-system generation check reject raced renders. Unique
+revision checks reject raced renders. A design-system edit does not end a session:
+it bumps the revision of every node it affects, so their in-flight renders are dropped,
+and later batches render against the new design. Unique
 attempt URLs prevent late uploads from overwriting or deleting a retry. The
 selected fallback remains owned until its replacement lands. Background renders
 never change active heights. The existing live/thumbnail handoffs remain in use.
@@ -90,6 +93,65 @@ At the measured throughput, 1,000 teams with the modeled workload need about
 
 With the daily budgets lifted, the single automatic browser is the only limit: at most 720
 browser-hours in a 30-day month, about $64/month above the included hours if it never stops.
+
+## Sprites
+
+Frames, components and token sheets render in sprites. A sprite is one browser page
+holding up to 24 nodes, each in its own same-origin `srcdoc` iframe at its own width,
+so viewport units, media queries, fixed positioning, root styles, custom element
+definitions and authored scripts resolve as they do in a page of their own. The page
+loads every document at once, compiles Tailwind once per distinct stylesheet, shares
+the prepared fonts through blob URLs, fits each auto-height frame to its content, and
+packs the frames into one layout. Lossless captures of bands of rows, at most 4 million
+pixels each, cover the sprite; the page then crops each node and encodes its WebP tiers.
+Canvas WebP at 0.8 is the same encoder and setting as a WebP capture at quality 80. A
+band travels to the Worker and back as base64 PNG, so its size bounds Worker memory
+for photographic content and keeps it inside one WebSocket message; a node larger than a
+band is captured directly as WebP. Frames wider than 1280px form sprites of
+their own width, captured at the sharp tier's scale. `worker/render-sprite.ts` holds
+the renderer and its limits.
+
+A node renders alone, through the single-page path, when its content keeps growing
+with its frame, when it is still loading after 8 seconds, when it does not fit the
+sprite page, or when its sprite failed. The FileRoom keeps those revisions in the
+`thumbSolo` meta key. A failed sprite charges no retry and retires only its tab.
+`thumbnail-turn` logs `pending`, the previews still trailing their node's revision
+after the turn, with sprite counts and time per phase.
+
+### Measurements, 2026-11-07
+
+Local Browser Run (Chrome 126.0.6478.182, headless), four tabs, on the Forge desktop
+(10 threads). Fixture: a token sheet with Inter from Google Fonts, 40 component
+specimens and 40 screens (1280×1000 and 1280×900 dashboards and settings, 390px
+auto-height lists, 1440px auto-height landing pages) built from those components. Not
+production or invoice measurements.
+
+| Renderer only, warm compilers | Single pages | Sprites |
+| --- | ---: | ---: |
+| 40 component specimens, median of 5 alternating runs | 2.58 s (2.54–2.66) | 0.38 s (0.37–0.40) |
+| 40 screens, median of 5 | 4.40 s (4.35–4.54) | 2.10 s (2.06–2.25) |
+| Worker-side CPU (Node process time), specimens / screens | 0.56 / 0.72 s | 0.12 / 0.41 s |
+
+| Live app (`verify-sharpner`), MCP edit to `pending: 0` | `main` 67b2feb | Sprites |
+| --- | ---: | ---: |
+| Edit `Button/Primary`, 42 previews, median of 5 | 6.07 s (5.97–6.12) | 3.61 s (3.46–3.76) |
+| Edit the token sheet, all 81 previews, median of 4 | 8.65 s (8.48–8.73) | 4.39 s (4.36–4.47) |
+| Browser time for the token edit, median | 7.46 s | 3.19 s |
+
+Both live paths include the 1.2-second debounce and ran in one turn with no failed
+render. Single-page captures were the limiter: Puppeteer serializes screenshots across
+a browser context and brings each tab to the front, about 150 ms per capture with four
+tabs against 40 ms with one. Sprites take one capture per sprite.
+
+Fidelity: eleven edge-case documents (viewport units, a fixed bar, a script, an
+overflowing fixed-height frame, root `rem`, a media query, a CSS background image, a
+dark `color-scheme` root, a viewport-high hero, and 1440px fixed and auto frames)
+produced byte-identical WebP tiers and heights in both paths; two of them rendered
+alone as designed. Across the 80 fixture nodes, lossless captures differ in 0.004% of
+screen pixels and 0.014% of specimen pixels, by at most 4/255 except one
+antialiased edge pixel at 40/255, from antialiasing of curves at a different page
+offset. Sizes and measured heights match exactly, so existing previews were not
+re-rendered.
 
 ## Local measurements, 2026-11-01
 

@@ -8,6 +8,15 @@ vi.mock("cloudflare:workers", () => ({
 const renderer = vi.hoisted(() => ({ launch: vi.fn(), loadFrame: vi.fn(), capture: vi.fn(), captureThumbnails: vi.fn() }));
 vi.mock("@cloudflare/puppeteer", () => ({ default: { launch: renderer.launch } }));
 vi.mock("./render", async (original) => ({ ...await original<typeof import("./render")>(), loadFrame: renderer.loadFrame, capture: renderer.capture, captureThumbnails: renderer.captureThumbnails }));
+// Sprites render through the same mocks a single render uses, so every node reaches loadFrame either way.
+vi.mock("./render-sprite", async (original) => ({ ...await original<typeof import("./render-sprite")>(), renderSprite: async (tab: unknown, jobs: { id: string }[], base: string, design: unknown) => {
+  const captured = new Map<string, unknown>();
+  for (const n of jobs) {
+    const size = await renderer.loadFrame(tab, n, base, design);
+    captured.set(n.id, { ...size, ...await renderer.captureThumbnails(tab, size.width, size.height) });
+  }
+  return { captured, fallback: [], phases: { load: 0, settle: 0, capture: 0, encode: 0 } };
+} }));
 import { FileRoom } from "./room";
 
 const databases: DatabaseSync[] = [];
