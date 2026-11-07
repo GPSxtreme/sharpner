@@ -54,3 +54,26 @@ export async function prepareRenderDesign(design: DesignSystem): Promise<RenderD
   for (const result of prepared) if (result) { tokens = tokens.replace(result.declaration, ""); fonts += result.css; }
   return fonts ? { ...design, tokens, fonts } : design;
 }
+
+/**
+ * Keeps the @font-face rules a set of documents can use: a rule without `unicode-range`, or one whose range covers
+ * a character in `text`. Google splits each weight into subsets (latin, latin-ext, cyrillic, greek, vietnamese…) and
+ * a browser only downloads the subsets its text needs, so the others are dead weight to send to every sprite.
+ * Text a script writes need not appear in its source, so callers keep every rule for documents with scripts.
+ */
+export function pruneFontFaces(css: string, text: string) {
+  const points = new Set<number>();
+  for (const char of text) points.add(char.codePointAt(0)!);
+  return css.replace(/@font-face\s*\{[^}]*\}/g, (rule) => {
+    const range = /unicode-range\s*:\s*([^;}]+)/i.exec(rule)?.[1];
+    if (!range) return rule;
+    const spans = range.split(",").map((part) => {
+      const [start, end] = part.trim().replace(/^u\+/i, "").split("-");
+      // A wildcard such as U+4?? spans 400 to 4FF.
+      const low = parseInt(start!.replace(/\?/g, "0"), 16), high = parseInt((end ?? start!).replace(/\?/g, "F"), 16);
+      return [low, high] as const;
+    });
+    for (const point of points) for (const [low, high] of spans) if (point >= low && point <= high) return rule;
+    return "";
+  });
+}

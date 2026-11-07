@@ -1,7 +1,7 @@
 import type { Page as BrowserPage } from "@cloudflare/puppeteer";
 import { frameDocument } from "../shared/types";
 import { AUTO_VIEWPORT, bytesToBase64, capture, FIT_PASSES, hiScale, MAX_HEIGHT, seedInput, tailwindCss } from "./render";
-import type { RenderDesign } from "./render-fonts";
+import { pruneFontFaces, type RenderDesign } from "./render-fonts";
 
 /**
  * A sprite renders many previews from one browser page. Each node keeps its own document in a same-origin srcdoc
@@ -113,7 +113,11 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
 
   await page.goto("about:blank");
   await page.setContent(SHELL, { waitUntil: "load", timeout: 5000 });
-  phases.sentKB += Math.round((docs.reduce((n, doc) => n + doc.length, 0) + (design.fonts?.length ?? 0)) / 1024);
+  // Only the font subsets these documents' characters need travel to the page. Text a script writes need not be in
+  // its source, so documents with authored scripts keep every subset.
+  const scripted = [...jobs.map((job) => job.html), ...design.components.map((c) => c.html)].some((html) => /<script\b/i.test(html));
+  const fonts = design.fonts && !scripted ? pruneFontFaces(design.fonts, docs.join("")) : design.fonts ?? "";
+  phases.sentKB += Math.round((docs.reduce((n, doc) => n + doc.length, 0) + fonts.length) / 1024);
   const { frames: loaded, ms: pageMs } = await page.evaluate(async ({ docs, sizes, fonts, mark, timeoutMs }) => {
     const started = performance.now();
     // Fonts arrive once as data URLs and become blob URLs every frame shares, instead of megabytes per document.
@@ -144,7 +148,7 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
       document.body.appendChild(frame);
     })));
     return { frames, ms: Math.round(performance.now() - started) };
-  }, { docs, sizes, fonts: design.fonts ?? "", mark: FONT_MARK, timeoutMs: limits.loadMs }) as { frames: Loaded[]; ms: number };
+  }, { docs, sizes, fonts, mark: FONT_MARK, timeoutMs: limits.loadMs }) as { frames: Loaded[]; ms: number };
   phases.pageLoad += pageMs;
 
   lap("load");
