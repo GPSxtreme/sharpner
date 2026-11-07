@@ -125,6 +125,15 @@ shared context when contexts are unavailable, and closes its contexts when it en
 A raw CDP capture that skips the lock does not work: a tab that is not in front
 produces no frames, and the capture times out.
 
+A production A/B on 7 Nov 2026 rotated one test file's turns through shared or own
+contexts with four or two tabs (14 previews per turn, 2 or 3 turns per layout). Medians
+were 9.5 s (own contexts, four tabs), 9.9 s (shared, four), 10.1 s (own, two) and
+10.5 s (shared, two), with overlapping ranges: no measurable difference during a period
+when every turn took about twice as long as an hour earlier. Four tabs did about
+70% more summed browser work than two for the same wall time, so the production
+browser was bound by its own CPU rather than by capture order. Own contexts with four
+tabs stayed the default.
+
 A sprite sends only the font subsets its documents' characters need. Google splits
 each weight into `unicode-range` subsets, and the Inter sheet in the measurement
 fixture is 1.1 MB in 28 faces, nearly all for scripts the documents never use. A

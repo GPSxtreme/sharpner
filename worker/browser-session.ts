@@ -25,8 +25,7 @@ export async function openBrowser(endpoint: Parameters<typeof puppeteer.launch>[
  * capturing tab to the front of its window, so tabs sharing one context take turns capturing; in their own
  * contexts they capture in parallel. Falls back to the shared context when contexts are unavailable.
  */
-export async function openTab(browser: Browser, ownContext = true): Promise<Page> {
-  if (!ownContext) return browser.newPage();
+export async function openTab(browser: Browser): Promise<Page> {
   try {
     return await (await browser.createBrowserContext()).newPage();
   } catch (err) {
