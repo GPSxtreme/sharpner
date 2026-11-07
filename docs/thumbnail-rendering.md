@@ -124,7 +124,10 @@ sprite page, or when its sprite failed. The FileRoom keeps those revisions in th
 `thumbnail-turn` logs `pending`, the previews still trailing their node's revision
 after the turn, with sprite counts, `launchMs`, whether the browser was `reused` and
 left `warm`, and time per phase: `seed` (the Worker's first Tailwind pass and the
-documents), `load`, `settle`, `capture` and `encode`, summed over the turn's tabs.
+documents), `load`, `settle`, `capture` and `encode`, summed over the turn's tabs, with
+`pageLoad`, the part of `load` the page itself spent, and `sentKB`, the documents and
+fonts sent to it. In Workers `Date.now()` advances only across I/O, so CPU-only work
+such as `seed` lands in the next phase that waits on the browser.
 
 ### Measurements, 2026-11-07
 

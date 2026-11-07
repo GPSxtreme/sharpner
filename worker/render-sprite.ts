@@ -14,7 +14,13 @@ export type SpriteCapture = { width: number; measured: number; height: number; h
 /** `fallback` nodes did not render in the sprite (slow to load, never settled, or no room) and render on their own. */
 export type SpriteResult = { captured: Map<string, SpriteCapture>; fallback: string[]; phases: SpritePhases };
 /** Milliseconds per stage of one sprite, for the turn log. */
-export type SpritePhases = { seed: number; load: number; settle: number; capture: number; encode: number };
+export type SpritePhases = {
+  seed: number; load: number; settle: number; capture: number; encode: number;
+  /** Of `load`, the time the page itself spent: fonts to blob URLs and every document loaded. The rest is transfer. */
+  pageLoad: number;
+  /** Kilobytes of documents and fonts sent to the page. */
+  sentKB: number;
+};
 
 export const SPRITE_LIMITS = {
   /** Nodes in one sprite. */
@@ -89,7 +95,7 @@ type Layout = { placed: Placed[]; fallback: number[]; width: number; height: num
 /** Renders every job it can into one page and returns their captures; the rest are listed for a single render. */
 export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: string, design: RenderDesign, limits = SPRITE_LIMITS): Promise<SpriteResult> {
   const captured = new Map<string, SpriteCapture>();
-  const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0 };
+  const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0, pageLoad: 0, sentKB: 0 };
   if (!jobs.length) return { captured, fallback: [], phases };
   let mark = Date.now();
   const lap = (phase: keyof SpritePhases) => { const now = Date.now(); phases[phase] += now - mark; mark = now; };
@@ -107,7 +113,9 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
 
   await page.goto("about:blank");
   await page.setContent(SHELL, { waitUntil: "load", timeout: 5000 });
-  const loaded = await page.evaluate(async ({ docs, sizes, fonts, mark, timeoutMs }) => {
+  phases.sentKB += Math.round((docs.reduce((n, doc) => n + doc.length, 0) + (design.fonts?.length ?? 0)) / 1024);
+  const { frames: loaded, ms: pageMs } = await page.evaluate(async ({ docs, sizes, fonts, mark, timeoutMs }) => {
+    const started = performance.now();
     // Fonts arrive once as data URLs and become blob URLs every frame shares, instead of megabytes per document.
     const fontCss = fonts ? fonts.replace(/url\(data:([^;,)]+);base64,([^)]+)\)/g, (_: string, type: string, data: string) => {
       const binary = atob(data);
@@ -115,7 +123,7 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       return `url(${URL.createObjectURL(new Blob([bytes], { type }))})`;
     }) : "";
-    return Promise.all(docs.map((doc, i) => new Promise<{ css: string; classes: string[] } | null>((resolve) => {
+    const frames = await Promise.all(docs.map((doc, i) => new Promise<{ css: string; classes: string[] } | null>((resolve) => {
       const frame = document.createElement("iframe");
       frame.dataset.i = String(i);
       frame.style.width = `${sizes[i]!.w}px`;
@@ -135,7 +143,9 @@ export async function renderSprite(page: BrowserPage, jobs: SpriteJob[], base: s
       frame.srcdoc = fontCss ? doc.split(mark).join(fontCss) : doc;
       document.body.appendChild(frame);
     })));
-  }, { docs, sizes, fonts: design.fonts ?? "", mark: FONT_MARK, timeoutMs: limits.loadMs }) as Loaded[];
+    return { frames, ms: Math.round(performance.now() - started) };
+  }, { docs, sizes, fonts: design.fonts ?? "", mark: FONT_MARK, timeoutMs: limits.loadMs }) as { frames: Loaded[]; ms: number };
+  phases.pageLoad += pageMs;
 
   lap("load");
   // Second Tailwind pass over the classes the documents actually hold, once per distinct authored stylesheet.

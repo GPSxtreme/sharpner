@@ -1011,7 +1011,7 @@ export class FileRoom extends DurableObject<Env> {
     const tabCount = Math.min(THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
     const started = Date.now();
     let rendered = 0, launchMs = 0, sprites = 0, alone = 0, reused = false;
-    const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0 };
+    const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0, pageLoad: 0, sentKB: 0 };
     let retryAt: number | undefined;
     let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
     let left: string | undefined;
