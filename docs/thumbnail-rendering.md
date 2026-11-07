@@ -117,6 +117,14 @@ band is captured directly as WebP. Frames wider than 1280px form sprites of
 their own width, captured at the sharp tier's scale. `worker/render-sprite.ts` holds
 the renderer and its limits.
 
+A sprite sends only the font subsets its documents' characters need. Google splits
+each weight into `unicode-range` subsets, and the Inter sheet in the measurement
+fixture is 1.1 MB in 28 faces, nearly all for scripts the documents never use. A
+browser only downloads subsets its text needs, so the result is the same. Text an
+authored script writes need not be in its source, so a sprite whose screens or
+components contain a script sends every subset. On 7 Nov 2026 production turns
+spent about 70% of a sprite's load sending its 1.2 MB, against 30% in the page.
+
 A node renders alone, through the single-page path, when its content keeps growing
 with its frame, when it is still loading after 8 seconds, when it does not fit the
 sprite page, or when its sprite failed. The FileRoom keeps those revisions in the
