@@ -12,6 +12,15 @@ export const BACKFILL = {
 };
 export const backfilling = (fileId: string | undefined, now = Date.now()) => !!fileId && BACKFILL.files.has(fileId) && now < BACKFILL.until;
 
+/**
+ * Temporary production A/B, 7 Nov 2026: turns of these files rotate through tab layouts so they can be compared
+ * under the same conditions. Every other file uses the defaults. Remove once a layout is chosen.
+ */
+export const TAB_EXPERIMENT = {
+  files: new Set(["ee9c0227-53a9-407a-8491-d7fff9b47661"]),
+  arms: [{ contexts: false, tabs: 4 }, { contexts: true, tabs: 4 }, { contexts: false, tabs: 2 }, { contexts: true, tabs: 2 }],
+};
+
 export const THUMBNAIL_POLICY = {
   debounceMs: 1200,
   tabs: 4,

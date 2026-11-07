@@ -15,7 +15,7 @@ import { ViewerAccess } from "./viewer-access";
 import { Comments, COMMENT_SCHEMA } from "./comments";
 import { presenceMessage } from "./presence";
 import { isSessionPrincipal, type SessionPrincipal } from "../shared/session-principal";
-import { backfilling, THUMBNAIL_POLICY } from "./thumbnail-policy";
+import { backfilling, TAB_EXPERIMENT, THUMBNAIL_POLICY } from "./thumbnail-policy";
 import { themeLabel } from "../shared/themes";
 import { bakeTheme } from "../shared/bake-theme";
 import { patchBrand } from "../shared/design-system";
@@ -1008,7 +1008,14 @@ export class FileRoom extends DurableObject<Env> {
       if (this.backfill()) this.setMeta("backfill", "");
       return { more: false, browserMs: 0, rendered: 0 };
     }
-    const tabCount = Math.min(THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
+    // Temporary A/B: listed files rotate through tab layouts turn by turn.
+    let arm: (typeof TAB_EXPERIMENT.arms)[number] | undefined;
+    if (TAB_EXPERIMENT.files.has(fileId)) {
+      const turn = Number(this.meta("tabExperimentTurn") ?? 0);
+      this.setMeta("tabExperimentTurn", String(turn + 1));
+      arm = TAB_EXPERIMENT.arms[turn % TAB_EXPERIMENT.arms.length];
+    }
+    const tabCount = Math.min(arm?.tabs ?? THUMB_TABS, this.pendingThumbnails(THUMB_TABS).length + this.pendingImages(THUMB_TABS).length);
     const started = Date.now();
     let rendered = 0, launchMs = 0, sprites = 0, alone = 0, reused = false;
     const phases: SpritePhases = { seed: 0, load: 0, settle: 0, capture: 0, encode: 0, pageLoad: 0, sentKB: 0 };
@@ -1031,7 +1038,7 @@ export class FileRoom extends DurableObject<Env> {
         if (stopped) { await session.browser.close().catch(() => {}); return; }
         browser = session.browser;
         const tabs = new Set(await Promise.all(Array.from({ length: Math.max(1, tabCount) }, async () => {
-          const tab = await openTab(browser!);
+          const tab = await openTab(browser!, arm?.contexts ?? true);
           opened.push(tab);
           return tab;
         })));
@@ -1085,7 +1092,7 @@ export class FileRoom extends DurableObject<Env> {
     const browserMs = Date.now() - started;
     // `pending` previews still trail their node's revision after this turn; 0 means the file is in sync.
     const pending = this.pendingCount();
-    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, pending, sprites, alone, browserMs, launchMs, reused, warm: !!left, quantumMs, phases }));
+    console.log("thumbnail-turn", JSON.stringify({ fileId, rendered, pending, sprites, alone, browserMs, launchMs, reused, warm: !!left, quantumMs, phases, ...(arm && { arm }) }));
     this.updateCover(fileId);
     const more = pending > 0;
     if (!more && this.backfill()) { this.setMeta("backfill", ""); console.log("thumbnail-backfill-done", JSON.stringify({ fileId })); }
