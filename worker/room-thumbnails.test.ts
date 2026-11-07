@@ -408,6 +408,26 @@ describe("thumbnail scheduling", () => {
       expect(browser.disconnect).not.toHaveBeenCalled();
     });
 
+    it("opens each tab in a browser context of its own and closes those contexts, keeping the browser", async () => {
+      const {room,create,db} = fixture(true);
+      const contexts: { newPage: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }[] = [];
+      const shared = {};
+      const browser = { ...session("ctx").browser, defaultBrowserContext: () => shared,
+        createBrowserContext: vi.fn(async () => {
+          const context = { close: vi.fn(async () => {}), newPage: vi.fn(async () => ({ close: vi.fn(async () => {}), browserContext: () => context })) };
+          contexts.push(context);
+          return context;
+        }) };
+      renderer.launch.mockResolvedValue(browser);
+      await create("a"); await create("b"); await create("c");
+      db.exec("DELETE FROM meta WHERE k = 'thumbAfter'");
+      expect(await room.renderThumbnails()).toMatchObject({rendered:3,warm:"ctx"});
+      expect(contexts).toHaveLength(3);
+      expect(contexts.map((c) => c.close.mock.calls.length)).toEqual([1, 1, 1]);
+      expect(browser.newPage).not.toHaveBeenCalled();
+      expect(browser.disconnect).toHaveBeenCalledTimes(1);
+    });
+
     it("reports no browser when the turn had nothing to render", async () => {
       const {room} = fixture(true);
       expect((await room.renderThumbnails(undefined, undefined, "warm-1")).warm).toBeUndefined();
