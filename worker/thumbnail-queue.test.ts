@@ -1,12 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("cloudflare:workers", () => ({ DurableObject: class { constructor(readonly ctx: DurableObjectState, readonly env: Env) {} } }));
-const calls = vi.hoisted(() => ({ render: vi.fn(), quantum: [] as number[], warm: [] as (string | undefined)[] }));
-vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: (_notAfter: number, quantumMs: number, warm?: string) => { calls.quantum.push(quantumMs); calls.warm.push(warm); return calls.render(fileId); } }) }));
+const calls = vi.hoisted(() => ({ render: vi.fn(), close: vi.fn(), quantum: [] as number[], warm: [] as (string | undefined)[], keepWarm: [] as boolean[] }));
+vi.mock("./data", () => ({ room: (_env: unknown, fileId: string) => ({ renderThumbnails: (_notAfter: number, quantumMs: number, warm?: string, keepWarm = false) => { calls.quantum.push(quantumMs); calls.warm.push(warm); calls.keepWarm.push(keepWarm); return calls.render(fileId); } }) }));
+vi.mock("./browser-session", () => ({ closeBrowser: calls.close }));
 import { ThumbnailQueue } from "./thumbnail-queue";
 import { BACKFILL, THUMBNAIL_POLICY as policy } from "./thumbnail-policy";
 const databases: DatabaseSync[] = [];
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); calls.quantum.length = 0; calls.warm.length = 0; });
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); calls.render.mockReset().mockResolvedValue({ more: false, browserMs: 1000, rendered: 4 }); calls.close.mockReset(); calls.quantum.length = 0; calls.warm.length = 0; calls.keepWarm.length = 0; });
 afterEach(() => { vi.useRealTimers(); for (const db of databases.splice(0)) db.close(); });
 function fixture() {
   const db = new DatabaseSync(":memory:"); databases.push(db);
@@ -18,7 +19,7 @@ function fixture() {
   } };
   let alarm: number | null = null;
   const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; } } } as unknown as DurableObjectState;
-  const env = { DB: { prepare: () => ({ bind: (fileId: string) => ({ first: async () => fileId === "deleted" ? null : {workspace_id:fileId.split("-")[0]} }) }) } } as unknown as Env;
+  const env = { BROWSER: {}, DB: { prepare: () => ({ bind: (fileId: string) => ({ first: async () => fileId === "deleted" ? null : {workspace_id:fileId.split("-")[0]} }) }) } } as unknown as Env;
   const wake = () => new ThumbnailQueue(ctx, env), queue = wake();
   const fire = async () => { alarm = null; await queue.alarm(); };
   return {db, queue, wake, fire, alarm: () => alarm};
@@ -42,6 +43,34 @@ describe("warm browser", () => {
     expect(calls.warm).toEqual([undefined, "session-1", "session-1", "session-1", undefined]);
     vi.advanceTimersByTime(policy.keepAliveMs - 5000);
     await queue.enqueue("b-one", Date.now()); await fire();
+    expect(calls.warm.at(-1)).toBeUndefined();
+  });
+
+  it("asks a turn to keep its browser only when another file is waiting, and closes one nobody reuses in time", async () => {
+    const {queue, fire, alarm} = fixture();
+    await queue.enqueue("a-one", Date.now()); await fire();
+    expect(calls.keepWarm).toEqual([false]);
+    // Two files are ready, so the first turn's browser serves the second.
+    await queue.enqueue("a-two", Date.now()); await queue.enqueue("b-one", Date.now());
+    calls.render.mockResolvedValueOnce({ more: true, browserMs: 1000, rendered: 4, warm: "session-1", retryAt: Date.now() + 500 });
+    await fire();
+    expect(calls.keepWarm.at(-1)).toBe(true);
+    await fire();
+    expect(calls.warm.at(-1)).toBe("session-1");
+    expect(calls.keepWarm.at(-1)).toBe(false);
+    // That turn opened no browser, so the warm one stays for the first file's remaining work, due in 500 ms.
+    await fire();
+    expect(alarm()).toBe(Date.now() + 500);
+    vi.advanceTimersByTime(500); await fire();
+    expect(calls.warm.at(-1)).toBe("session-1");
+    expect(calls.close).not.toHaveBeenCalled();
+    // Nothing else is due, so the queue closes the browser once its warm window passes.
+    await fire();
+    expect(alarm()).toBe(Date.now() - 500 + policy.warmMs);
+    vi.advanceTimersByTime(policy.warmMs); await fire();
+    expect(calls.close).toHaveBeenCalledWith({}, "session-1");
+    expect(alarm()).toBeNull();
+    await queue.enqueue("a-one", Date.now()); await fire();
     expect(calls.warm.at(-1)).toBeUndefined();
   });
 });

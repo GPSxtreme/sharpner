@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { closeBrowser } from "./browser-session";
 import { room } from "./data";
 import { backfilling, THUMBNAIL_POLICY as policy } from "./thumbnail-policy";
 
@@ -35,6 +36,18 @@ export class ThumbnailQueue extends DurableObject<Env> {
   async releaseScreenshot(token: string) {
     this.sql.exec(`DELETE FROM lease WHERE id = 1 AND token = ?`, token);
     if (this.sql.exec(`SELECT 1 FROM queue LIMIT 1`).toArray().length) await this.wake(Date.now() + 50);
+  }
+
+  /** Closes the browser a turn left warm once no turn reused it in time; until then, returns when to check. */
+  private async cool(now: number): Promise<number | undefined> {
+    const warm = this.sql.exec<{ session: string; until_ms: number }>(`SELECT session, until_ms FROM warm WHERE id = 1`).toArray()[0];
+    if (!warm) return undefined;
+    if (now < warm.until_ms) return warm.until_ms;
+    // Forget it before yielding, so no turn reconnects to a browser that is closing.
+    this.sql.exec(`DELETE FROM warm`);
+    if (this.env.BROWSER) await closeBrowser(this.env.BROWSER, warm.session);
+    console.log("thumbnail-browser-closed", JSON.stringify({ idleMs: now - warm.until_ms + policy.warmMs }));
+    return undefined;
   }
 
   async enqueue(fileId: string, readyAt: number): Promise<void> {
@@ -96,15 +109,17 @@ export class ThumbnailQueue extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(now + policy.reservationMs);
       let spent: number = policy.reservationMs;
       let more = true, completed = false, retryAt = now + 30_000;
-      // The browser the previous turn left running, while its keep-alive has time to spare. Turns run one at a
-      // time, so no other turn holds it.
-      const warm = this.sql.exec<{ session: string }>(`SELECT session FROM warm WHERE id = 1 AND until_ms > ?`, now).toArray()[0]?.session;
+      // The browser the previous turn left running for this one. Turns run one at a time, so no other turn holds it.
+      const warmRow = this.sql.exec<{ session: string; until_ms: number }>(`SELECT session, until_ms FROM warm WHERE id = 1 AND until_ms > ?`, now).toArray()[0];
+      const warm = warmRow?.session;
       this.sql.exec(`DELETE FROM warm`);
+      // A turn leaves its browser running only for work that is due at once; another file waiting is one case.
+      const keepWarm = admitted.length > 1;
       try {
-        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000, alone ? policy.soloQuantumMs : policy.quantumMs, warm);
+        const result = await room(this.env, job.fileId).renderThumbnails(now + policy.reservationMs - policy.sessionMs - 5000, alone ? policy.soloQuantumMs : policy.quantumMs, warm, keepWarm);
         // A turn that never opened a browser leaves the warm one as it was.
-        const left = result.warm === undefined ? warm : result.warm;
-        if (left) this.sql.exec(`INSERT OR REPLACE INTO warm VALUES (1, ?, ?)`, left, Date.now() + policy.keepAliveMs - 10_000);
+        if (result.warm === undefined && warmRow) this.sql.exec(`INSERT OR REPLACE INTO warm VALUES (1, ?, ?)`, warmRow.session, warmRow.until_ms);
+        else if (result.warm) this.sql.exec(`INSERT OR REPLACE INTO warm VALUES (1, ?, ?)`, result.warm, Date.now() + policy.warmMs);
         spent = Math.min(policy.reservationMs, Math.max(0, result.browserMs));
         more = result.more;
         retryAt = result.retryAt ?? Date.now() + 500;
@@ -118,6 +133,7 @@ export class ThumbnailQueue extends DurableObject<Env> {
     }
     // Previews then wait for the next UTC day; say so, because the canvas only shows "Rendering…".
     if (deferred.length) console.log("thumbnail-deferred", JSON.stringify({ deferred: deferred.slice(0, 20), files: deferred.length }));
-    if (jobs.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 50, next));
+    const coolAt = await this.cool(Date.now());
+    if (jobs.length || coolAt) await this.ctx.storage.setAlarm(Math.max(Date.now() + 50, Math.min(jobs.length ? next : Infinity, coolAt ?? Infinity)));
   }
 }
