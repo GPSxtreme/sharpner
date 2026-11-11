@@ -31,8 +31,15 @@ export function bytesToBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+/**
+ * Names the stand-in system font (see render-fonts.ts) ahead of the system families @font-face cannot claim: Chrome
+ * never looks up the generic `system-ui` there, nor `BlinkMacSystemFont` on macOS. The lookbehind skips class
+ * selectors, where Tailwind escapes the bracket or comma before the name (`.font-\[system-ui\]`).
+ */
+export const aliasSystemFonts = (css: string) => css.replace(/(?<![\w-]|\\.)(?:system-ui|-apple-system|BlinkMacSystemFont)(?![\w-])/g, "ui-sans-serif,$&");
+
 /** Like @tailwindcss/browser, a stylesheet that fails to compile contributes no CSS instead of failing the capture. */
-export const tailwindCss = (input: string, candidates: string[]) => thumbnailCss(input, candidates).catch((err) => {
+export const tailwindCss = (input: string, candidates: string[]) => thumbnailCss(input, candidates).then(aliasSystemFonts).catch((err) => {
   console.warn("tailwind compile failed", String(err));
   return "";
 });
