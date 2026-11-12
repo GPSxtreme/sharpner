@@ -41,6 +41,11 @@ describe("system font stacks in compiled CSS",()=>{
     expect(aliasSystemFonts(":root{--font-sans:system-ui, sans-serif}")).toBe(":root{--font-sans:ui-sans-serif,system-ui, sans-serif}");
     expect(aliasSystemFonts("p{font-family:-apple-system,BlinkMacSystemFont,Roboto}")).toBe("p{font-family:ui-sans-serif,-apple-system,ui-sans-serif,BlinkMacSystemFont,Roboto}");
   });
+  it("leaves selectors, quoted names and URLs as written",()=>{
+    const css='.system-ui,[data-font=system-ui],#system-ui{font-family:"system-ui"}@font-face{font-family:Own;src:url(/fonts/system-ui.woff2),url(system-ui.woff),url(https://x.example/-apple-system/a.woff)}';
+    expect(aliasSystemFonts(css)).toBe(css);
+    expect(aliasSystemFonts("p{font:15px/1.2 system-ui;font-family:var(--stack,system-ui)}")).toBe("p{font:15px/1.2 ui-sans-serif,system-ui;font-family:var(--stack,ui-sans-serif,system-ui)}");
+  });
   it("leaves class selectors and longer names as written",()=>{
     const css=".font-\\[system-ui\\]{font-family:system-ui}.md\\:font-\\[Inter\\,system-ui\\]{font:-apple-system-body}";
     expect(aliasSystemFonts(css)).toBe(css.replace("font-family:system-ui","font-family:ui-sans-serif,system-ui"));
